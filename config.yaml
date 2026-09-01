@@ -1,0 +1,59 @@
+# Research Paper Relationship Analyzer — Configuration
+# All keys are validated at startup. Missing required keys terminate the pipeline with a descriptive error.
+
+# --- LLM ---
+llm:
+  provider: "openai"            # openai | ollama | anthropic
+  model: "gpt-4o-mini"
+  api_key_env: "OPENAI_API_KEY" # environment variable name (never put the key here)
+  temperature: 0.0
+  max_retries: 3
+
+# --- Embedding ---
+embedding:
+  model: "sentence-transformers/all-MiniLM-L6-v2"
+  device: "cpu"                 # cpu | cuda | mps
+  batch_size: 32
+
+# --- NLI (contradiction detection) ---
+nli:
+  model: "cross-encoder/nli-deberta-v3-small"
+  contradiction_confidence_threshold: 0.60
+  methodology_similarity_threshold: 0.30
+
+# --- Relationship Scoring ---
+relationship_scoring:
+  weights:
+    objective: 0.25
+    methodology: 0.25
+    dataset: 0.20
+    results_metrics: 0.20
+    citation: 0.10
+
+# --- Gap Discovery ---
+gap_discovery:
+  weak_connection_threshold: 0.20
+  novelty_score_min: 0.0
+  novelty_score_max: 1.0
+
+# --- Storage ---
+storage:
+  corpus_input_path: "./data/papers"
+  output_path: "./output"
+  graph_path: "./output/knowledge_graph.json"
+  embeddings_path: "./output/embeddings.npz"
+  log_path: "./output/pipeline.log"
+
+# --- Pipeline ---
+pipeline:
+  max_documents: 10000
+  incremental: true
+  segment_types:
+    - abstract
+    - introduction
+    - related_work
+    - methodology
+    - experiments
+    - results
+    - conclusion
+    - references
