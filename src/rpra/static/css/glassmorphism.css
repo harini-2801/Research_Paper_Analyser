@@ -1,0 +1,91 @@
+/* ==========================================================================
+   Glassmorphism & Ultra-Modern UI Stylesheet
+   ========================================================================== */
+
+/* Glass Card Container */
+.glass-card {
+  background: rgba(15, 23, 42, 0.65);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.glass-card:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+  box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.5);
+}
+
+/* Glass Inner Highlight */
+.glass-glow {
+  position: relative;
+}
+
+.glass-glow::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.25), transparent);
+}
+
+/* Tab Navigation Buttons */
+.tab-btn {
+  color: #94a3b8;
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.tab-btn:hover {
+  color: #f1f5f9;
+  background: rgba(30, 41, 59, 0.5);
+}
+
+.tab-btn.active {
+  color: #ffffff;
+  background: rgba(99, 102, 241, 0.2);
+  border-color: rgba(99, 102, 241, 0.4);
+  box-shadow: 0 0 15px rgba(99, 102, 241, 0.25);
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.5);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(51, 65, 85, 0.7);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(99, 102, 241, 0.7);
+}
+
+/* Cytoscape Graph Canvas */
+#cy-container canvas {
+  outline: none !important;
+}
+
+/* Claim Comparison Cards */
+.claim-card-a {
+  background: rgba(99, 102, 241, 0.08);
+  border-left: 3px solid #6366f1;
+}
+
+.claim-card-b {
+  background: rgba(236, 72, 153, 0.08);
+  border-left: 3px solid #ec4899;
+}
+
+/* Novelty Meter Bar */
+.novelty-bar-fill {
+  background: linear-gradient(90deg, #f59e0b, #ec4899, #8b5cf6);
+}

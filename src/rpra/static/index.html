@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RPRA — Research Paper Relationship Analyzer</title>
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Plus Jakarta Sans"', 'sans-serif'],
+            mono: ['"JetBrains Mono"', 'monospace'],
+          },
+          colors: {
+            glass: {
+              bg: 'rgba(15, 23, 42, 0.75)',
+              border: 'rgba(255, 255, 255, 0.12)',
+              card: 'rgba(30, 41, 59, 0.65)',
+              hover: 'rgba(51, 65, 85, 0.75)',
+            },
+            brand: {
+              purple: '#8b5cf6',
+              pink: '#ec4899',
+              cyan: '#06b6d4',
+              indigo: '#6366f1',
+              emerald: '#10b981',
+              amber: '#f59e0b',
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- Cytoscape.js CDN for Graph Visualization -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+
+  <!-- Custom Glassmorphism Styles -->
+  <link rel="stylesheet" href="/static/css/glassmorphism.css" />
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans selection:bg-indigo-500 selection:text-white relative overflow-x-hidden">
+
+  <!-- Ambient Light Mesh Background -->
+  <div class="fixed inset-0 pointer-events-none z-0 overflow-hidden">
+    <div class="absolute -top-40 -left-40 w-96 h-96 bg-purple-600/20 rounded-full blur-3xl animate-pulse"></div>
+    <div class="absolute top-1/3 -right-40 w-96 h-96 bg-indigo-600/20 rounded-full blur-3xl animate-pulse" style="animation-delay: 2s;"></div>
+    <div class="absolute -bottom-40 left-1/3 w-96 h-96 bg-pink-600/15 rounded-full blur-3xl animate-pulse" style="animation-delay: 4s;"></div>
+    <div class="absolute inset-0 bg-[linear-gradient(to_right,#1e293b15_1px,transparent_1px),linear-gradient(to_bottom,#1e293b15_1px,transparent_1px)] bg-[size:4rem_4rem]"></div>
+  </div>
+
+  <div class="relative z-10 flex flex-col min-h-screen">
+    
+    <!-- Navigation / Header -->
+    <header class="sticky top-0 z-40 backdrop-blur-xl bg-slate-900/60 border-b border-white/10 px-6 py-4 transition-all">
+      <div class="max-w-7xl mx-auto flex items-center justify-between">
+        
+        <!-- Logo & Title -->
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 p-0.5 shadow-lg shadow-indigo-500/30">
+            <div class="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center">
+              <i data-lucide="network" class="w-5 h-5 text-indigo-400"></i>
+            </div>
+          </div>
+          <div>
+            <h1 class="text-xl font-bold bg-gradient-to-r from-white via-slate-200 to-indigo-300 bg-clip-text text-transparent tracking-tight">
+              RPRA <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 ml-2">v0.1.0</span>
+            </h1>
+            <p class="text-xs text-slate-400">Research Paper Relationship Analyzer & Gap Finder</p>
+          </div>
+        </div>
+
+        <!-- Connection Status & Execution Controls -->
+        <div class="flex items-center gap-3">
+          <!-- WebSocket Status Pill -->
+          <div id="ws-status" class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-800/80 border border-white/10 text-xs font-medium text-slate-300">
+            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+            <span id="ws-status-text">Connected</span>
+          </div>
+
+          <!-- Upload PDFs Button -->
+          <button id="btn-open-upload" class="flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-white/10 text-sm font-medium text-slate-200 transition-all hover:scale-105 active:scale-95 shadow-lg">
+            <i data-lucide="upload" class="w-4 h-4 text-cyan-400"></i>
+            <span>Upload PDFs</span>
+          </button>
+
+          <!-- Settings Button -->
+          <button id="btn-open-weights" class="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 border border-white/10 text-sm font-medium text-slate-200 transition-all hover:scale-105 active:scale-95">
+            <i data-lucide="sliders" class="w-4 h-4 text-purple-400"></i>
+            <span>Weights</span>
+          </button>
+
+          <!-- Trigger Demo Run -->
+          <button id="btn-run-demo" class="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-sm font-semibold transition-all hover:scale-105 active:scale-95 shadow-lg shadow-indigo-500/25">
+            <i data-lucide="play" class="w-4 h-4"></i>
+            <span>Demo Run</span>
+          </button>
+
+          <!-- Trigger Full LLM Run -->
+          <button id="btn-run-full" class="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-500 hover:to-rose-500 text-white text-sm font-semibold transition-all hover:scale-105 active:scale-95 shadow-lg shadow-pink-500/25">
+            <i data-lucide="sparkles" class="w-4 h-4"></i>
+            <span>Full LLM Pipeline</span>
+          </button>
+        </div>
+
+      </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="max-w-7xl w-full mx-auto px-6 py-6 flex-1 flex flex-col gap-6">
+
+      <!-- Metrics Overview Cards -->
+      <section class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <!-- Metric 1: Papers -->
+        <div class="glass-card p-5 rounded-2xl border border-white/10 flex items-center gap-4 relative overflow-hidden group">
+          <div class="w-12 h-12 rounded-xl bg-cyan-500/20 text-cyan-400 flex items-center justify-center border border-cyan-500/30 group-hover:scale-110 transition-transform">
+            <i data-lucide="file-text" class="w-6 h-6"></i>
+          </div>
+          <div>
+            <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Corpus Papers</p>
+            <h3 id="stat-papers-count" class="text-2xl font-bold text-white tracking-tight">0</h3>
+            <p id="stat-papers-sub" class="text-xs text-slate-400">PDFs ready for analysis</p>
+          </div>
+        </div>
+
+        <!-- Metric 2: Knowledge Graph -->
+        <div class="glass-card p-5 rounded-2xl border border-white/10 flex items-center gap-4 relative overflow-hidden group">
+          <div class="w-12 h-12 rounded-xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center border border-indigo-500/30 group-hover:scale-110 transition-transform">
+            <i data-lucide="share-2" class="w-6 h-6"></i>
+          </div>
+          <div>
+            <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Knowledge Graph</p>
+            <h3 id="stat-kg-count" class="text-2xl font-bold text-white tracking-tight">0 <span class="text-xs font-normal text-slate-400">nodes</span></h3>
+            <p id="stat-kg-sub" class="text-xs text-slate-400">0 graph edges connected</p>
+          </div>
+        </div>
+
+        <!-- Metric 3: Contradictions -->
+        <div class="glass-card p-5 rounded-2xl border border-white/10 flex items-center gap-4 relative overflow-hidden group">
+          <div class="w-12 h-12 rounded-xl bg-rose-500/20 text-rose-400 flex items-center justify-center border border-rose-500/30 group-hover:scale-110 transition-transform">
+            <i data-lucide="alert-triangle" class="w-6 h-6"></i>
+          </div>
+          <div>
+            <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Contradictions</p>
+            <h3 id="stat-contradictions-count" class="text-2xl font-bold text-white tracking-tight">0</h3>
+            <p id="stat-contradictions-sub" class="text-xs text-slate-400">NLI stance verified</p>
+          </div>
+        </div>
+
+        <!-- Metric 4: Research Gaps -->
+        <div class="glass-card p-5 rounded-2xl border border-white/10 flex items-center gap-4 relative overflow-hidden group">
+          <div class="w-12 h-12 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center border border-amber-500/30 group-hover:scale-110 transition-transform">
+            <i data-lucide="lightbulb" class="w-6 h-6"></i>
+          </div>
+          <div>
+            <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Research Gaps</p>
+            <h3 id="stat-gaps-count" class="text-2xl font-bold text-white tracking-tight">0</h3>
+            <p id="stat-gaps-sub" class="text-xs text-slate-400">Novelty-ranked opportunities</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Live Execution Progress Panel (Collapsible/Dynamic) -->
+      <section id="progress-panel" class="glass-card p-5 rounded-2xl border border-indigo-500/30 bg-indigo-950/20 hidden transition-all">
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex items-center gap-3">
+            <i data-lucide="loader-2" class="w-5 h-5 text-indigo-400 animate-spin"></i>
+            <h3 class="text-sm font-semibold text-white">Pipeline Execution Progress</h3>
+            <span id="progress-stage-badge" class="px-2.5 py-0.5 rounded-full text-xs font-mono bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">Initializing</span>
+          </div>
+          <span id="progress-elapsed" class="text-xs font-mono text-slate-400">0.0s</span>
+        </div>
+        
+        <!-- Progress Bar -->
+        <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden mb-3">
+          <div id="progress-bar" class="h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 w-0 transition-all duration-300"></div>
+        </div>
+
+        <p id="progress-message" class="text-xs font-mono text-slate-300 truncate">Preparing pipeline execution...</p>
+      </section>
+
+      <!-- Navigation Tabs -->
+      <div class="flex items-center gap-2 border-b border-white/10 pb-2">
+        <button data-tab="tab-graph" class="tab-btn active px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all">
+          <i data-lucide="network" class="w-4 h-4"></i>
+          <span>Knowledge Graph</span>
+        </button>
+        <button data-tab="tab-contradictions" class="tab-btn px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all">
+          <i data-lucide="shield-alert" class="w-4 h-4"></i>
+          <span>Contradictions</span>
+        </button>
+        <button data-tab="tab-gaps" class="tab-btn px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all">
+          <i data-lucide="compass" class="w-4 h-4"></i>
+          <span>Research Gaps</span>
+        </button>
+        <button data-tab="tab-corpus" class="tab-btn px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 transition-all">
+          <i data-lucide="library" class="w-4 h-4"></i>
+          <span>Corpus & Scores</span>
+        </button>
+      </div>
+
+      <!-- Tab Content Area -->
+      <div class="flex-1 flex gap-6 relative min-h-[550px]">
+
+        <!-- TAB 1: KNOWLEDGE GRAPH EXPLORER -->
+        <div id="tab-graph" class="tab-content flex-1 flex flex-col glass-card rounded-2xl border border-white/10 overflow-hidden relative">
+          <!-- Graph Toolbar -->
+          <div class="px-5 py-3 border-b border-white/10 bg-slate-900/40 flex flex-wrap items-center justify-between gap-3">
+            <div class="flex items-center gap-2">
+              <span class="text-xs font-semibold text-slate-400">Node Legend:</span>
+              <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-500/20 text-blue-300 border border-blue-500/30">Document</span>
+              <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">Methodology</span>
+              <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-purple-500/20 text-purple-300 border border-purple-500/30">Dataset</span>
+              <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/20 text-amber-300 border border-amber-500/30">Model</span>
+              <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">Metric</span>
+              <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-rose-500/20 text-rose-300 border border-rose-500/30">Gap/Limitation</span>
+              <span class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-gradient-to-r from-pink-500 to-purple-500 text-white font-bold">Bridge Entity</span>
+            </div>
+
+            <div class="flex items-center gap-2">
+              <input id="graph-search" type="text" placeholder="Filter node name..." class="px-3 py-1.5 rounded-lg bg-slate-950/60 border border-white/10 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 w-44" />
+              <button id="btn-fit-graph" class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300" title="Fit to Screen">
+                <i data-lucide="maximize-2" class="w-4 h-4"></i>
+              </button>
+            </div>
+          </div>
+
+          <!-- Canvas Container -->
+          <div id="cy-container" class="w-full h-full min-h-[500px] bg-slate-950/40 relative">
+            <div id="cy-placeholder" class="absolute inset-0 flex flex-col items-center justify-center text-slate-500 gap-3">
+              <i data-lucide="network" class="w-12 h-12 text-slate-600 animate-pulse"></i>
+              <p class="text-sm font-medium">Run pipeline or load corpus to render Knowledge Graph</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB 2: CONTRADICTIONS HUB -->
+        <div id="tab-contradictions" class="tab-content hidden flex-1 flex flex-col gap-4">
+          <div id="contradictions-list" class="grid grid-cols-1 gap-4">
+            <div class="glass-card p-8 rounded-2xl border border-white/10 text-center text-slate-400">
+              <i data-lucide="shield-check" class="w-10 h-10 text-slate-600 mx-auto mb-2"></i>
+              <p class="text-sm">No contradictions detected yet. Trigger a pipeline run to inspect claims.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB 3: RESEARCH GAPS EXPLORER -->
+        <div id="tab-gaps" class="tab-content hidden flex-1 flex flex-col gap-4">
+          <div id="gaps-list" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="glass-card p-8 rounded-2xl border border-white/10 text-center text-slate-400 col-span-2">
+              <i data-lucide="compass" class="w-10 h-10 text-slate-600 mx-auto mb-2"></i>
+              <p class="text-sm">No research gaps discovered yet. Run pipeline analysis on your corpus.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB 4: CORPUS & SCORES -->
+        <div id="tab-corpus" class="tab-content hidden flex-1 flex flex-col gap-6">
+          
+          <!-- Ingested Documents List -->
+          <div class="glass-card p-5 rounded-2xl border border-white/10">
+            <h3 class="text-sm font-bold text-white mb-3 flex items-center gap-2">
+              <i data-lucide="file-text" class="w-4 h-4 text-cyan-400"></i>
+              <span>Ingested Research Papers</span>
+            </h3>
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-xs">
+                <thead class="text-slate-400 uppercase bg-slate-900/60 border-b border-white/10">
+                  <tr>
+                    <th class="py-2.5 px-4">Doc ID</th>
+                    <th class="py-2.5 px-4">Title</th>
+                    <th class="py-2.5 px-4">Category</th>
+                    <th class="py-2.5 px-4">Confidence</th>
+                    <th class="py-2.5 px-4">Pages</th>
+                    <th class="py-2.5 px-4">Segments</th>
+                  </tr>
+                </thead>
+                <tbody id="docs-table-body" class="divide-y divide-white/5 text-slate-300">
+                  <tr>
+                    <td colspan="6" class="py-4 text-center text-slate-500">No documents ingested yet.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Relationship Scores Breakdown -->
+          <div class="glass-card p-5 rounded-2xl border border-white/10">
+            <h3 class="text-sm font-bold text-white mb-3 flex items-center gap-2">
+              <i data-lucide="sliders" class="w-4 h-4 text-purple-400"></i>
+              <span>Pairwise Relationship Composite Scores</span>
+            </h3>
+            <div id="scores-container" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <p class="text-xs text-slate-500 col-span-2">Run scoring to calculate relatedness across 5 dimensions.</p>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- RIGHT SIDEBAR: EVIDENCE INSPECTOR DRAWER -->
+        <aside id="evidence-drawer" class="w-80 glass-card rounded-2xl border border-white/10 p-5 flex flex-col gap-4 hidden lg:flex">
+          <div class="flex items-center justify-between border-b border-white/10 pb-3">
+            <div class="flex items-center gap-2">
+              <i data-lucide="search" class="w-4 h-4 text-indigo-400"></i>
+              <h3 class="text-sm font-bold text-white">Evidence Inspector</h3>
+            </div>
+            <span class="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300">Provenance</span>
+          </div>
+
+          <div id="evidence-drawer-content" class="flex-1 overflow-y-auto space-y-4 text-xs text-slate-300">
+            <div class="text-center py-10 text-slate-500">
+              <i data-lucide="mouse-pointer" class="w-8 h-8 mx-auto mb-2 text-slate-600"></i>
+              <p>Click any node, contradiction claim, or research gap to view verbatim sentence evidence.</p>
+            </div>
+          </div>
+        </aside>
+
+      </div>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="border-t border-white/10 py-4 px-6 text-center text-xs text-slate-500 mt-auto backdrop-blur-md">
+      <div class="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-2">
+        <p>© 2026 RPRA Team — BCSE497J | Vellore Institute of Technology, Chennai Campus</p>
+        <p class="flex items-center gap-2">
+          <span>VIT Chennai</span> • <span>Dr. Poornima S</span>
+        </p>
+      </div>
+    </footer>
+
+  </div>
+
+  <!-- UPLOAD MODAL -->
+  <div id="modal-upload" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm hidden">
+    <div class="glass-card w-full max-w-lg p-6 rounded-2xl border border-white/10 shadow-2xl relative">
+      <button id="btn-close-upload" class="absolute top-4 right-4 text-slate-400 hover:text-white">
+        <i data-lucide="x" class="w-5 h-5"></i>
+      </button>
+
+      <h3 class="text-lg font-bold text-white mb-1 flex items-center gap-2">
+        <i data-lucide="upload-cloud" class="w-5 h-5 text-cyan-400"></i>
+        <span>Upload Research Papers</span>
+      </h3>
+      <p class="text-xs text-slate-400 mb-4">Add PDF research papers directly to your corpus input folder.</p>
+
+      <!-- Dropzone -->
+      <div id="dropzone" class="border-2 border-dashed border-white/20 hover:border-cyan-400/60 rounded-xl p-8 text-center cursor-pointer transition-all bg-slate-900/30">
+        <i data-lucide="file-plus" class="w-10 h-10 text-cyan-400 mx-auto mb-2"></i>
+        <p class="text-sm font-medium text-slate-200">Drag & drop PDF files here</p>
+        <p class="text-xs text-slate-500 mt-1">or click to browse from your computer</p>
+        <input type="file" id="file-input" accept=".pdf" class="hidden" multiple />
+      </div>
+
+      <div id="upload-status" class="mt-4 text-xs font-mono text-slate-300"></div>
+    </div>
+  </div>
+
+  <!-- WEIGHTS MODAL -->
+  <div id="modal-weights" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm hidden">
+    <div class="glass-card w-full max-w-md p-6 rounded-2xl border border-white/10 shadow-2xl relative">
+      <button id="btn-close-weights" class="absolute top-4 right-4 text-slate-400 hover:text-white">
+        <i data-lucide="x" class="w-5 h-5"></i>
+      </button>
+
+      <h3 class="text-lg font-bold text-white mb-1 flex items-center gap-2">
+        <i data-lucide="sliders" class="w-4 h-4 text-purple-400"></i>
+        <span>Scoring Weight Configuration</span>
+      </h3>
+      <p class="text-xs text-slate-400 mb-4">Tune component weights for relationship composite score (Must sum to 1.0).</p>
+
+      <div class="space-y-4 text-xs">
+        <div>
+          <div class="flex justify-between mb-1">
+            <label class="text-slate-300 font-semibold">Objective Similarity</label>
+            <span id="val-w-obj" class="font-mono text-purple-400">0.25</span>
+          </div>
+          <input id="slider-w-obj" type="range" min="0" max="1" step="0.05" value="0.25" class="w-full accent-purple-500" />
+        </div>
+
+        <div>
+          <div class="flex justify-between mb-1">
+            <label class="text-slate-300 font-semibold">Methodology Similarity</label>
+            <span id="val-w-meth" class="font-mono text-purple-400">0.25</span>
+          </div>
+          <input id="slider-w-meth" type="range" min="0" max="1" step="0.05" value="0.25" class="w-full accent-purple-500" />
+        </div>
+
+        <div>
+          <div class="flex justify-between mb-1">
+            <label class="text-slate-300 font-semibold">Dataset Overlap</label>
+            <span id="val-w-ds" class="font-mono text-purple-400">0.20</span>
+          </div>
+          <input id="slider-w-ds" type="range" min="0" max="1" step="0.05" value="0.20" class="w-full accent-purple-500" />
+        </div>
+
+        <div>
+          <div class="flex justify-between mb-1">
+            <label class="text-slate-300 font-semibold">Results & Metrics Similarity</label>
+            <span id="val-w-res" class="font-mono text-purple-400">0.20</span>
+          </div>
+          <input id="slider-w-res" type="range" min="0" max="1" step="0.05" value="0.20" class="w-full accent-purple-500" />
+        </div>
+
+        <div>
+          <div class="flex justify-between mb-1">
+            <label class="text-slate-300 font-semibold">Citation Overlap</label>
+            <span id="val-w-cite" class="font-mono text-purple-400">0.10</span>
+          </div>
+          <input id="slider-w-cite" type="range" min="0" max="1" step="0.05" value="0.10" class="w-full accent-purple-500" />
+        </div>
+
+        <div class="pt-2 border-t border-white/10 flex items-center justify-between">
+          <span class="font-bold text-slate-300">Total Sum: <span id="weight-sum" class="font-mono text-emerald-400">1.00</span></span>
+          <button id="btn-save-weights" class="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs">
+            Save Weights
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="/static/js/app.js"></script>
+  <script>
+    lucide.createIcons();
+  </script>
+</body>
+</html>

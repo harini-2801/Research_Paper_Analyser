@@ -119,3 +119,29 @@ def run(
         console.print(f"[yellow]⚠ {len(result.ingestion_errors)} file(s) failed to ingest.[/yellow]")
         for err in result.ingestion_errors:
             console.print(f"  • {err['file']}: {err['reason']}")
+
+
+@app.command("serve")
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host", "-h", help="Host address to bind server"),
+    port: int = typer.Option(8000, "--port", "-p", help="Port number to bind server"),
+    open_browser: bool = typer.Option(True, "--open/--no-open", help="Automatically open web browser"),
+) -> None:
+    """Launch the FastAPI Web Server & Glassmorphism Web App."""
+    import webbrowser
+    import uvicorn
+
+    url = f"http://{host}:{port}"
+    console.print(
+        Panel(
+            f"[bold cyan]Launching RPRA Glassmorphism Web UI Server[/bold cyan]\n"
+            f"URL: [bold green]{url}[/bold green]",
+            title="RPRA Web Server",
+        )
+    )
+
+    if open_browser:
+        webbrowser.open(url)
+
+    uvicorn.run("rpra.server:app", host=host, port=port, reload=False)
+

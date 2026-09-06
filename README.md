@@ -230,11 +230,11 @@ Output:
   Score weights : obj=0.25 meth=0.25 ds=0.2 res=0.2 cite=0.1
 ```
 
-### Run full pipeline
+### Launch Modern Glassmorphism Web App & REST Server
 ```bash
-# Drop PDF files into ./data/papers/ first
-rpra run
+rpra serve
 ```
+This automatically launches the FastAPI REST/WebSocket server and opens the Glassmorphism Web Interface at `http://localhost:8000`.
 
 ### Demo mode (no LLM API key required)
 ```bash
@@ -247,6 +247,25 @@ rpra run --config my-config.yaml
 ```
 
 ---
+
+## Deployment Instructions
+
+### 1. Frontend Deployment (Vercel)
+The single-page Glassmorphism web application is ready for Vercel deployment via `vercel.json`:
+1. Connect repository `https://github.com/harini-2801/Research_Paper_Analyser.git` to **Vercel**.
+2. Vercel automatically detects static content in `src/rpra/static`.
+3. Set environment variable `API_BASE_URL` in Vercel to point to your deployed Render backend API URL.
+
+### 2. Backend Deployment (Render)
+The FastAPI backend server is configured for Render via `render.yaml`:
+1. Create a new **Web Service** on **Render** connected to your repository.
+2. Select **Python** runtime with Build Command: `pip install -e .`
+3. Start Command: `uvicorn rpra.server:app --host 0.0.0.0 --port $PORT`
+4. Add environment variable `OPENAI_API_KEY`.
+
+---
+
+
 
 ## Test Results
 
