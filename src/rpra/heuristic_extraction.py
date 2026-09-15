@@ -200,6 +200,11 @@ _SECTION_AFFINITY: dict[EntityType, frozenset[str]] = {
     ),
 }
 
+# Sections produced by the ingestion fallback, where the paper could not be
+# split by heading. Their content spans the whole paper, so no entity type can
+# be ruled out by position.
+_UNSTRUCTURED_SECTIONS = frozenset({"body", "preamble", ""})
+
 _MAX_SPAN_CHARS = 400
 _MAX_PER_TYPE_PER_SEGMENT = 12
 
@@ -275,7 +280,11 @@ def extract_entities_from_segment(segment: Segment) -> list[Entity]:
         if counts.get(entity_type, 0) >= _MAX_PER_TYPE_PER_SEGMENT:
             return
         affinity = _SECTION_AFFINITY.get(entity_type)
-        if affinity is not None and section not in affinity:
+        if (
+            affinity is not None
+            and section not in affinity
+            and section not in _UNSTRUCTURED_SECTIONS
+        ):
             return
         counts[entity_type] = counts.get(entity_type, 0) + 1
         found.append(
