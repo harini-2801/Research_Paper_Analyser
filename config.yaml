@@ -48,6 +48,8 @@ storage:
 pipeline:
   max_documents: 10000
   incremental: true
+  extraction_backend: "auto"   # auto | llm | heuristic
+  use_nli: true                # set false to skip the NLI model download
   segment_types:
     - abstract
     - introduction

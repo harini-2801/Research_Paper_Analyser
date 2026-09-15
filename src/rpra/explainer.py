@@ -85,7 +85,7 @@ def explain_contradiction(
             messages=[{"role": "user", "content": prompt}],
         )
         explanation = response.choices[0].message.content.strip()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("Explanation generation failed for contradiction %s: %s", contradiction.id, exc)
         explanation = "[error] Explanation generation failed."
 
@@ -119,7 +119,7 @@ def explain_gap(
             messages=[{"role": "user", "content": prompt}],
         )
         explanation = response.choices[0].message.content.strip()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("Explanation generation failed for gap %s: %s", gap.id, exc)
         explanation = "[error] Explanation generation failed."
 
@@ -137,8 +137,9 @@ def generate_explanations(
     Only processes findings with status=CONFIRMED / confirmed=True.
     """
     try:
-        import openai
         import os
+
+        import openai
         api_key = os.environ.get(llm_settings.api_key_env, "")
         client = openai.OpenAI(api_key=api_key)
     except ImportError:

@@ -1,9 +1,10 @@
 """Tests for configuration loading and validation."""
 
-import pytest
 from pathlib import Path
 
-from rpra.config import load_settings, Settings
+import pytest
+
+from rpra.config import load_settings
 
 
 def test_load_default_config(tmp_path):

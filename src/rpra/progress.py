@@ -9,17 +9,14 @@ from __future__ import annotations
 
 import json
 import logging
-import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from rich.console import Console
-from rich.live import Live
-from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from rpra.models import ProgressEvent, PipelineStageStatus
+from rpra.models import PipelineStageStatus, ProgressEvent
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +33,30 @@ _STATUS_ICON = {
     PipelineStageStatus.COMPLETE: "✓",
     PipelineStageStatus.FAILED: "✗",
 }
+
+
+def safe_callback(
+    callback: Callable[[ProgressEvent], None] | None,
+) -> Callable[[ProgressEvent], None] | None:
+    """
+    Wrap a progress callback so it can never raise into pipeline logic.
+
+    Stages emit progress from inside their own try/except blocks, so an
+    exception from a consumer - a console that cannot encode a character, a
+    closed WebSocket - would otherwise be caught by the stage and misreported as
+    that stage failing. Reporting is not the work; it must not be able to fail
+    the work.
+    """
+    if callback is None:
+        return None
+
+    def guarded(event: ProgressEvent) -> None:
+        try:
+            callback(event)
+        except Exception as exc:
+            logger.warning("Progress callback raised (event ignored): %s", exc)
+
+    return guarded
 
 
 class ProgressPanel:
@@ -114,7 +135,7 @@ class ProgressPanel:
         try:
             with self._log_path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(event.model_dump(), default=str) + "\n")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("Failed to write to log: %s", exc)
 
     # ------------------------------------------------------------------

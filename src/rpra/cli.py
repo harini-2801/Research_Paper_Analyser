@@ -3,10 +3,11 @@ CLI entry point  —  `rpra` command.
 
 Usage examples
 --------------
-  rpra run                         # run full pipeline with config.yaml
-  rpra run --config my-config.yaml
-  rpra run --skip-extraction       # skip LLM calls (demo/test mode)
-  rpra validate-config             # validate config only
+  rpra run                                  # run with config.yaml
+  rpra run -b heuristic --no-nli            # fully offline, no API key
+  rpra run -b llm                           # LLM extraction (needs OPENAI_API_KEY)
+  rpra serve                                # launch the web UI
+  rpra validate-config                      # validate config only
 """
 
 from __future__ import annotations
@@ -53,8 +54,17 @@ def validate_config(
 @app.command("run")
 def run(
     config: Path = typer.Option(Path("config.yaml"), "--config", "-c", help="Path to config file"),
+    backend: str = typer.Option(
+        None,
+        "--extraction-backend",
+        "-b",
+        help="auto | llm | heuristic. 'heuristic' needs no API key.",
+    ),
+    no_nli: bool = typer.Option(
+        False, "--no-nli", help="Skip the NLI model; use numeric claim comparison only"
+    ),
     skip_extraction: bool = typer.Option(
-        False, "--skip-extraction", help="Skip LLM entity/relation extraction (demo mode)"
+        False, "--skip-extraction", help="Skip extraction entirely (smoke test only)"
     ),
     skip_explanation: bool = typer.Option(
         False, "--skip-explanation", help="Skip LLM explanation generation"
@@ -91,6 +101,8 @@ def run(
             on_progress=panel.callback(),
             skip_extraction=skip_extraction,
             skip_explanation=skip_explanation,
+            extraction_backend=backend,
+            use_nli=False if no_nli else None,
         )
     except Exception as exc:
         console.print(f"[bold red]Pipeline error:[/bold red] {exc}")
@@ -101,7 +113,10 @@ def run(
     console.print(
         Panel(
             f"[green]Documents processed :[/green] {len(result.documents)}\n"
+            f"[green]Extraction backend  :[/green] {result.extraction_backend or 'skipped'}\n"
+            f"[green]Embedding backend   :[/green] {result.embedding_backend or 'n/a'}\n"
             f"[green]Entities extracted  :[/green] {len(result.entities)}\n"
+            f"[green]Bridge concepts     :[/green] {len(result.bridge_entities)}\n"
             f"[green]Relations found     :[/green] {len(result.relations)}\n"
             f"[green]KG nodes / edges    :[/green] "
             f"{result.knowledge_graph.node_count() if result.knowledge_graph else 0} / "
@@ -127,16 +142,17 @@ def serve(
     port: int = typer.Option(8000, "--port", "-p", help="Port number to bind server"),
     open_browser: bool = typer.Option(True, "--open/--no-open", help="Automatically open web browser"),
 ) -> None:
-    """Launch the FastAPI Web Server & Glassmorphism Web App."""
+    """Launch the web UI and REST API."""
     import webbrowser
+
     import uvicorn
 
     url = f"http://{host}:{port}"
     console.print(
         Panel(
-            f"[bold cyan]Launching RPRA Glassmorphism Web UI Server[/bold cyan]\n"
+            f"[bold cyan]Research Paper Relationship Analyzer[/bold cyan]\n"
             f"URL: [bold green]{url}[/bold green]",
-            title="RPRA Web Server",
+            title="Web UI",
         )
     )
 

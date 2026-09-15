@@ -12,8 +12,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
-
+from pydantic import BaseModel, Field, model_validator
 
 # ---------------------------------------------------------------------------
 # Sub-models
@@ -48,7 +47,7 @@ class RelationshipWeights(BaseModel):
     citation: float = Field(0.10, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
-    def weights_sum_to_one(self) -> "RelationshipWeights":
+    def weights_sum_to_one(self) -> RelationshipWeights:
         total = (
             self.objective
             + self.methodology
@@ -74,7 +73,7 @@ class GapDiscoveryConfig(BaseModel):
     novelty_score_max: float = Field(1.0, le=1.0)
 
     @model_validator(mode="after")
-    def min_less_than_max(self) -> "GapDiscoveryConfig":
+    def min_less_than_max(self) -> GapDiscoveryConfig:
         if self.novelty_score_min >= self.novelty_score_max:
             raise ValueError(
                 "gap_discovery.novelty_score_min must be less than novelty_score_max."
@@ -93,6 +92,11 @@ class StorageConfig(BaseModel):
 class PipelineConfig(BaseModel):
     max_documents: int = Field(10000, ge=1)
     incremental: bool = True
+    # auto: use the LLM when an API key is present, otherwise heuristics.
+    extraction_backend: Literal["auto", "llm", "heuristic"] = "auto"
+    # Loading the NLI model costs ~280MB and a slow first run; disabling it
+    # leaves numeric claim comparison as the contradiction detector.
+    use_nli: bool = True
     segment_types: list[str] = Field(
         default_factory=lambda: [
             "abstract",

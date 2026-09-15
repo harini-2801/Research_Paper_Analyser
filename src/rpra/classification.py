@@ -15,13 +15,13 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from rpra.models import (
     Document,
     DocumentCategory,
-    ProgressEvent,
     PipelineStageStatus,
+    ProgressEvent,
 )
 
 # ---------------------------------------------------------------------------
@@ -177,7 +177,7 @@ def classify_corpus(
                     doc_id=doc.id,
                     status=PipelineStageStatus.COMPLETE,
                     message=(
-                        f"{doc.id} → {doc.category.value} "
+                        f"{doc.id} -> {doc.category.value} "
                         f"(confidence={confidence:.2f})"
                     ),
                     details={
@@ -189,7 +189,7 @@ def classify_corpus(
                 )
             )
 
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             elapsed = time.perf_counter() - start
             doc.metadata["classification_error"] = str(exc)
             emit(

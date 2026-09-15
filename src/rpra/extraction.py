@@ -17,17 +17,18 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
-from typing import Callable
-from uuid import uuid4
+from collections.abc import Callable
 
+from rpra.heuristic_extraction import extract_document as heuristic_extract_document
 from rpra.models import (
     Document,
     Entity,
     EntityType,
     EvidenceTrail,
-    ProgressEvent,
     PipelineStageStatus,
+    ProgressEvent,
     Relation,
     RelationType,
 )
@@ -100,7 +101,7 @@ def _call_llm(
             data = json.loads(raw)
             if isinstance(data, list):
                 return data
-        except (json.JSONDecodeError, IndexError, Exception) as exc:  # noqa: BLE001
+        except (json.JSONDecodeError, IndexError, Exception) as exc:
             logger.warning("LLM call attempt %d failed: %s", attempt + 1, exc)
 
     return []
@@ -278,38 +279,128 @@ def find_bridge_entities(
 
 
 # ---------------------------------------------------------------------------
+# Backend selection
+# ---------------------------------------------------------------------------
+
+
+def resolve_backend(requested: str, llm_settings) -> str:
+    """
+    Decide which extraction backend to actually use.
+
+    ``auto`` prefers the LLM when a key is present and falls back to heuristics
+    otherwise, so a run never silently produces an empty knowledge graph just
+    because no credentials were configured.
+    """
+    requested = (requested or "auto").lower()
+    if requested not in {"auto", "llm", "heuristic"}:
+        raise ValueError(
+            f"Unknown extraction backend '{requested}'. "
+            "Valid values are: auto, llm, heuristic."
+        )
+
+    if requested == "heuristic":
+        return "heuristic"
+
+    has_key = bool(os.environ.get(llm_settings.api_key_env, "").strip())
+    try:
+        import openai  # noqa: F401
+
+        has_package = True
+    except ImportError:
+        has_package = False
+
+    if requested == "llm":
+        if not has_key:
+            raise RuntimeError(
+                f"extraction backend 'llm' requires the {llm_settings.api_key_env} "
+                "environment variable to be set."
+            )
+        if not has_package:
+            raise RuntimeError(
+                "extraction backend 'llm' requires the openai package. "
+                "Install it with: pip install openai"
+            )
+        return "llm"
+
+    if has_key and has_package:
+        return "llm"
+
+    logger.info(
+        "No %s found - using the heuristic extraction backend.",
+        llm_settings.api_key_env,
+    )
+    return "heuristic"
+
+
+# ---------------------------------------------------------------------------
 # Full corpus extraction
 # ---------------------------------------------------------------------------
+
+
+def _merge_entities(primary: list[Entity], secondary: list[Entity]) -> list[Entity]:
+    """
+    Union two entity lists, preferring *primary* on collision.
+
+    Used when the LLM and heuristic backends both run: the gazetteer reliably
+    catches dataset and metric names the LLM paraphrases away, while the LLM
+    catches objectives and limitations no rule covers.
+    """
+    merged = list(primary)
+    seen = {(e.doc_id, e.entity_type.value, e.text.lower().strip()) for e in primary}
+    for entity in secondary:
+        key = (entity.doc_id, entity.entity_type.value, entity.text.lower().strip())
+        if key not in seen:
+            seen.add(key)
+            merged.append(entity)
+    return merged
 
 
 def extract_corpus(
     documents: list[Document],
     llm_settings,   # rpra.config.LLMConfig
+    backend: str = "auto",
     on_progress: Callable[[ProgressEvent], None] | None = None,
 ) -> tuple[list[Entity], list[Relation], dict[str, list[str]]]:
     """
     Run entity and relation extraction over the full corpus.
 
+    Parameters
+    ----------
+    documents:
+        Ingested documents with segments populated.
+    llm_settings:
+        LLM configuration; only consulted when the LLM backend is active.
+    backend:
+        ``auto`` | ``llm`` | ``heuristic``.  See :func:`resolve_backend`.
+    on_progress:
+        Optional progress callback.
+
     Returns
     -------
     all_entities : list[Entity]
     all_relations : list[Relation]
-    bridge_entities : dict[str, list[str]]  entity_text → [doc_ids]
+    bridge_entities : dict[str, list[str]]  entity_text -> [doc_ids]
     """
-    try:
-        import openai  # lazy import so the module loads without the package
-    except ImportError:
-        raise ImportError(
-            "openai package is required for extraction. "
-            "Install it with: pip install openai"
-        )
-
-    api_key = __import__("os").environ.get(llm_settings.api_key_env, "")
-    client = openai.OpenAI(api_key=api_key)
+    active = resolve_backend(backend, llm_settings)
 
     def emit(event: ProgressEvent) -> None:
         if on_progress:
             on_progress(event)
+
+    client = None
+    if active == "llm":
+        import openai
+
+        client = openai.OpenAI(api_key=os.environ.get(llm_settings.api_key_env, ""))
+
+    emit(
+        ProgressEvent(
+            stage="extraction",
+            status=PipelineStageStatus.RUNNING,
+            message=f"Extracting entities and relations (backend={active})",
+            details={"backend": active, "documents": len(documents)},
+        )
+    )
 
     all_entities: list[Entity] = []
     all_relations: list[Relation] = []
@@ -325,30 +416,50 @@ def extract_corpus(
             )
         )
 
-        doc_entities: list[Entity] = []
-        doc_relations: list[Relation] = []
+        # The heuristic pass always runs: it is free, deterministic, and its
+        # gazetteer hits are exactly the cross-paper comparison terms.
+        doc_entities, doc_relations = heuristic_extract_document(doc)
 
-        for seg in doc.segments:
-            try:
-                seg_entities = extract_entities_from_segment(
-                    seg, doc.title, client,
-                    llm_settings.model, llm_settings.max_retries, llm_settings.temperature,
-                )
-                seg_relations = extract_relations_from_segment(
-                    seg, seg_entities, doc.title, client,
-                    llm_settings.model, llm_settings.max_retries, llm_settings.temperature,
-                )
-                doc_entities.extend(seg_entities)
-                doc_relations.extend(seg_relations)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Segment extraction failed in %s / %s: %s", doc.id, seg.section_type, exc)
+        if active == "llm":
+            llm_entities: list[Entity] = []
+            llm_relations: list[Relation] = []
+            for seg in doc.segments:
+                if seg.section_type == "references":
+                    continue
+                try:
+                    seg_entities = extract_entities_from_segment(
+                        seg, doc.title, client,
+                        llm_settings.model, llm_settings.max_retries,
+                        llm_settings.temperature,
+                    )
+                    seg_relations = extract_relations_from_segment(
+                        seg, seg_entities, doc.title, client,
+                        llm_settings.model, llm_settings.max_retries,
+                        llm_settings.temperature,
+                    )
+                    llm_entities.extend(seg_entities)
+                    llm_relations.extend(seg_relations)
+                except Exception as exc:
+                    logger.warning(
+                        "Segment extraction failed in %s / %s: %s",
+                        doc.id, seg.section_type, exc,
+                    )
+            doc_entities = _merge_entities(llm_entities, doc_entities)
+            doc_relations = doc_relations + llm_relations
 
         doc_entities = deduplicate_entities(doc_entities)
+
+        # Dropping duplicate entities can orphan relations that referenced them.
+        surviving_ids = {str(e.id) for e in doc_entities}
+        doc_relations = [
+            r for r in doc_relations
+            if r.source_id in surviving_ids and r.target_id in surviving_ids
+        ]
+
         all_entities.extend(doc_entities)
         all_relations.extend(doc_relations)
 
-        elapsed = time.perf_counter() - start
-        by_type = {}
+        by_type: dict[str, int] = {}
         for e in doc_entities:
             by_type[e.entity_type.value] = by_type.get(e.entity_type.value, 0) + 1
 
@@ -362,9 +473,28 @@ def extract_corpus(
                     f"{len(doc_relations)} relations"
                 ),
                 details={"entities_by_type": by_type, "relations": len(doc_relations)},
-                elapsed_seconds=round(elapsed, 2),
+                elapsed_seconds=round(time.perf_counter() - start, 2),
             )
         )
 
     bridge_entities = find_bridge_entities(all_entities)
+
+    emit(
+        ProgressEvent(
+            stage="extraction",
+            status=PipelineStageStatus.COMPLETE,
+            message=(
+                f"Extraction complete: {len(all_entities)} entities, "
+                f"{len(all_relations)} relations, "
+                f"{len(bridge_entities)} bridge entities"
+            ),
+            details={
+                "backend": active,
+                "entities": len(all_entities),
+                "relations": len(all_relations),
+                "bridge_entities": len(bridge_entities),
+            },
+        )
+    )
+
     return all_entities, all_relations, bridge_entities

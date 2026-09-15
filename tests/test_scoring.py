@@ -1,13 +1,11 @@
 """Tests for relationship scoring (Requirement 6)."""
 
-import pytest
 from rpra.models import Document, Entity, EntityType
 from rpra.scoring import (
-    compute_relationship_score,
-    _jaccard_similarity,
     _cosine_similarity,
+    _jaccard_similarity,
+    compute_relationship_score,
 )
-
 
 # ---------------------------------------------------------------------------
 # Unit tests for helpers

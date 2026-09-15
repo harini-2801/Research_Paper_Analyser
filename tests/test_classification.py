@@ -1,8 +1,7 @@
 """Tests for document classification (Requirement 2)."""
 
-import pytest
+from rpra.classification import classify_corpus, classify_document
 from rpra.models import Document, DocumentCategory, Segment
-from rpra.classification import classify_document, classify_corpus
 
 
 def _make_doc(doc_id: str, abstract_text: str) -> Document:
@@ -90,7 +89,6 @@ def test_low_confidence_flags_for_review():
 
 def test_corpus_classification_no_crash():
     """classify_corpus should complete without raising for any text content."""
-    import string
     texts = [
         "Random text with no signals.",
         "Baseline experiment dataset accuracy F1-score evaluation results.",

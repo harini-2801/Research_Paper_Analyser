@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import fitz  # PyMuPDF
 
-from rpra.models import Document, ProgressEvent, PipelineStageStatus, Segment
+from rpra.models import Document, PipelineStageStatus, ProgressEvent, Segment
 
 # ---------------------------------------------------------------------------
 # Heading-to-section-type mapping (order matters — first match wins)
@@ -248,13 +248,13 @@ def ingest_corpus(
                     stage="ingestion",
                     doc_id=doc.id,
                     status=PipelineStageStatus.COMPLETE,
-                    message=f"Parsed {pdf_path.name} → {len(doc.segments)} segments",
+                    message=f"Parsed {pdf_path.name} -> {len(doc.segments)} segments",
                     details={"segments": len(doc.segments), "title": doc.title},
                     elapsed_seconds=round(elapsed, 2),
                 )
             )
 
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             elapsed = time.perf_counter() - start
             errors.append({"file": str(pdf_path), "reason": str(exc)})
             emit(
