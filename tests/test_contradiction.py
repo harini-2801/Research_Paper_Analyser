@@ -89,6 +89,7 @@ def test_same_dataset_different_values_is_a_disagreement():
         claim("b", "Our reproduction reaches 87.1% accuracy on CIFAR-10."),
         {"cifar-10", "accuracy"},
         {"cifar-10"},
+        {"resnet-50"},
     )
     assert confidence is not None
     assert 0.5 < confidence < 1.0
@@ -100,6 +101,7 @@ def test_different_datasets_are_not_compared():
         claim("b", "We reach 68.4% accuracy on CIFAR-100."),
         {"cifar-10", "cifar-100", "accuracy"},
         {"cifar-10", "cifar-100"},
+        set(),
     ) is None
 
 
@@ -109,6 +111,7 @@ def test_close_values_are_not_a_disagreement():
         claim("b", "We reach 94.0% accuracy on CIFAR-10."),
         {"cifar-10", "accuracy"},
         {"cifar-10"},
+        {"resnet-50"},
     ) is None
 
 
@@ -118,19 +121,20 @@ def test_no_shared_term_means_no_comparison():
         claim("b", "We reach 40.1% BLEU on WMT."),
         set(),
         set(),
+        set(),
     ) is None
 
 
 def test_larger_gap_yields_higher_confidence():
     small = _numeric_disagreement(
-        claim("a", "90.0% accuracy on CIFAR-10."),
-        claim("b", "80.0% accuracy on CIFAR-10."),
-        {"cifar-10", "accuracy"}, {"cifar-10"},
+        claim("a", "We reach 90.0% accuracy on CIFAR-10."),
+        claim("b", "We reach 80.0% accuracy on CIFAR-10."),
+        {"cifar-10", "accuracy"}, {"cifar-10"}, set(),
     )
     large = _numeric_disagreement(
-        claim("a", "90.0% accuracy on CIFAR-10."),
-        claim("b", "40.0% accuracy on CIFAR-10."),
-        {"cifar-10", "accuracy"}, {"cifar-10"},
+        claim("a", "We reach 90.0% accuracy on CIFAR-10."),
+        claim("b", "We reach 40.0% accuracy on CIFAR-10."),
+        {"cifar-10", "accuracy"}, {"cifar-10"}, set(),
     )
     assert large > small
 
@@ -223,3 +227,29 @@ def test_missing_nli_model_still_returns_numeric_findings():
         use_nli=True,
     )
     assert found
+
+
+def test_narration_is_not_a_claim():
+    """
+    "In Sec. 4.2, we apply Batch Normalization to the ImageNet network" names a
+    dataset and a number but asserts no result. Sentences like this were the
+    main source of false positives on real papers.
+    """
+    assert _numeric_disagreement(
+        claim("a", "In Sec. 4.2, we apply Batch Normalization to the ImageNet network at 74.8%."),
+        claim("b", "Our model reaches 77.7% accuracy on ImageNet."),
+        {"imagenet", "accuracy"},
+        {"imagenet"},
+        set(),
+    ) is None
+
+
+def test_shared_dataset_without_a_shared_metric_is_not_comparable():
+    """Two papers measuring different things on one dataset are not in conflict."""
+    assert _numeric_disagreement(
+        claim("a", "We achieve 74.8% accuracy on ImageNet."),
+        claim("b", "We achieve 45.2% mAP on ImageNet."),
+        {"imagenet"},
+        {"imagenet"},
+        set(),
+    ) is None

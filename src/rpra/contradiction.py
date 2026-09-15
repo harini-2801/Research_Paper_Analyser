@@ -52,6 +52,8 @@ logger = logging.getLogger(__name__)
 _MAX_CLAIMS_PER_DOC = 8
 _MAX_PAIRS_PER_DOC_PAIR = 24
 _CANDIDATE_SCORE_THRESHOLD = 0.35
+# One disagreement restated across several sentences is still one finding.
+_MAX_FINDINGS_PER_DOC_PAIR = 3
 
 # Two reported values are treated as disagreeing past this relative difference.
 _NUMERIC_DISAGREEMENT_RATIO = 0.05
@@ -59,6 +61,24 @@ _NUMERIC_DISAGREEMENT_RATIO = 0.05
 # relative gap at which confidence saturates.
 _NUMERIC_BASE_CONFIDENCE = 0.62
 _NUMERIC_SATURATION_RATIO = 0.30
+
+# A claim only counts if the sentence actually asserts a measured outcome.
+# Discursive sentences ("In Sec. 4.2, we apply Batch Normalization to ...")
+# mention a dataset and a number without stating a result, and were the main
+# source of false positives on real papers.
+_RESULT_ASSERTION_RE = re.compile(
+    r"\b(achiev\w*|reach\w*|obtain\w*|attain\w*|yield\w*|report\w*|scores?|scored|"
+    r"improv\w*|outperform\w*|surpass\w*|exceed\w*|"
+    r"accuracy\s+of|error\s+rate\s+of|performance\s+of|results?\s+in)",
+    re.IGNORECASE,
+)
+
+# Sentences pointing elsewhere in the paper are describing, not claiming.
+_CROSS_REFERENCE_RE = re.compile(
+    r"\b(see|in)\s+(sec\.|sec\b|section|table|fig\.|fig\b|figure|appendix)|"
+    r"\bas\s+(detailed|described|shown|discussed)\b",
+    re.IGNORECASE,
+)
 
 _VALUE_RE = re.compile(
     r"(\d{1,3}(?:\.\d+)?)\s*%|"          # 92.4%
@@ -127,6 +147,14 @@ def _dataset_names(entities: list[Entity]) -> set[str]:
     }
 
 
+def _model_names(entities: list[Entity]) -> set[str]:
+    return {
+        e.text.lower().strip()
+        for e in entities
+        if e.entity_type == EntityType.MODEL
+    }
+
+
 # ---------------------------------------------------------------------------
 # Numeric claim comparison
 # ---------------------------------------------------------------------------
@@ -172,6 +200,7 @@ def _numeric_disagreement(
     claim_b: Entity,
     shared: set[str],
     dataset_terms: set[str],
+    model_terms: set[str],
 ) -> float | None:
     """
     Score a numeric disagreement between two result claims.
@@ -197,6 +226,37 @@ def _numeric_disagreement(
     datasets_a = {t for t in dataset_terms if _mentions(text_a, t)}
     datasets_b = {t for t in dataset_terms if _mentions(text_b, t)}
     if datasets_a and datasets_b and not (datasets_a & datasets_b):
+        return None
+
+    # They must also be about the same *system*. Two papers reporting different
+    # BLEU on WMT for two different models are not in conflict - they are simply
+    # describing different things. Requiring a shared subject is what separates
+    # a contradiction from a comparison.
+    models_a = {t for t in model_terms if _mentions(text_a, t)}
+    models_b = {t for t in model_terms if _mentions(text_b, t)}
+    if models_a and models_b and not (models_a & models_b):
+        return None
+
+    # A claim that names no dataset at all is too vague to adjudicate.
+    if not datasets_a or not datasets_b:
+        return None
+
+    # Both sides must assert a measured outcome rather than narrate one.
+    for text in (text_a, text_b):
+        if not _RESULT_ASSERTION_RE.search(text):
+            return None
+        if _CROSS_REFERENCE_RE.search(text):
+            return None
+
+    # And they must be measuring the same thing: a shared metric named in both
+    # sentences. A shared dataset alone is not a common yardstick.
+    metrics_shared = {
+        term for term in shared
+        if term not in dataset_terms
+        and _mentions(text_a, term)
+        and _mentions(text_b, term)
+    }
+    if not metrics_shared:
         return None
 
     values_a = parse_reported_values(claim_a.sentence_span)
@@ -395,6 +455,7 @@ def detect_contradictions(
         met_compat = _metrics_comparable(ents_a, ents_b)
         shared = _shared_terms(ents_a, ents_b)
         dataset_terms = _dataset_names(ents_a) | _dataset_names(ents_b)
+        model_terms = _model_names(ents_a) | _model_names(ents_b)
         meth_sim = methodology_index.get(frozenset([doc_a, doc_b]), 0.0)
 
         compared = 0
@@ -413,7 +474,7 @@ def detect_contradictions(
                 # Numeric comparison first: it is cheap and more reliable than
                 # NLI on sentences dense with figures.
                 numeric_conf = _numeric_disagreement(
-                    claim_a, claim_b, shared, dataset_terms
+                    claim_a, claim_b, shared, dataset_terms, model_terms
                 )
                 if numeric_conf is not None:
                     label = NLILabel.CONTRADICTION
@@ -482,6 +543,17 @@ def detect_contradictions(
                 break
 
     contradictions.sort(key=lambda c: c.confidence, reverse=True)
+
+    # Keep only the strongest findings for each document pair.
+    per_pair: dict[frozenset[str], int] = {}
+    kept: list[Contradiction] = []
+    for item in contradictions:
+        key = frozenset([item.doc_id_a, item.doc_id_b])
+        if per_pair.get(key, 0) >= _MAX_FINDINGS_PER_DOC_PAIR:
+            continue
+        per_pair[key] = per_pair.get(key, 0) + 1
+        kept.append(item)
+    contradictions = kept
 
     confirmed = sum(1 for c in contradictions if c.status == ContradictionStatus.CONFIRMED)
     unconfirmed = len(contradictions) - confirmed
