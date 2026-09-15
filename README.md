@@ -214,8 +214,16 @@ Entities shared across two or more documents (datasets, models, algorithms) are 
 ## Installation
 
 ```bash
-pip install -e ".[dev]"
+pip install -e .            # core: runs the whole pipeline offline
+pip install -e ".[ml]"      # + transformer embeddings and the NLI model
+pip install -e ".[llm]"     # + OpenAI extraction and explanations
+pip install -e ".[dev]"     # + the test suite
 ```
+
+The core install is deliberately light (~174 MB). The transformer stack is
+~2.5 GB and optional: without it, embeddings fall back to a deterministic
+TF-IDF space and contradiction detection to numeric claim comparison, and the
+pipeline still runs end to end. See [DEPLOYMENT.md](DEPLOYMENT.md).
 
 An OpenAI API key is optional. Without one the pipeline uses the heuristic
 extraction backend, which runs fully offline:

@@ -124,3 +124,59 @@ def test_composite_is_weighted_sum():
         + w["citation"] * score.citation_overlap
     )
     assert abs(score.composite_score - round(expected, 4)) < 1e-4
+
+
+def test_negative_similarity_is_clamped_not_rejected():
+    """
+    Cosine similarity ranges over [-1, 1], but RelationshipScore requires >= 0,
+    so a negative dimension made the whole score fail validation and the pair
+    was dropped. The TF-IDF embedding backend produces negatives routinely -
+    on a 30-paper corpus this silently lost 203 of 435 pairs.
+    """
+    doc_a = Document(id="a", title="A", file_path="a.pdf")
+    doc_b = Document(id="b", title="B", file_path="b.pdf")
+
+    def entity(doc_id, vector):
+        return Entity(
+            doc_id=doc_id,
+            entity_type=EntityType.OBJECTIVE,
+            text="objective",
+            section="abstract",
+            page_number=1,
+            sentence_span="An objective sentence.",
+            embedding=vector,
+        )
+
+    # Opposed vectors give a cosine of -1.
+    score = compute_relationship_score(
+        doc_a, doc_b,
+        [entity("a", [1.0, 0.0, 0.0])],
+        [entity("b", [-1.0, 0.0, 0.0])],
+    )
+
+    assert score.objective_similarity == 0.0
+    assert 0.0 <= score.composite_score <= 1.0
+
+
+def test_every_pair_survives_scoring_with_opposed_vectors():
+    """A pair must never vanish because one dimension came out negative."""
+    from rpra.scoring import score_corpus
+
+    docs = [Document(id=f"d{i}", title=f"D{i}", file_path=f"d{i}.pdf") for i in range(5)]
+    entities = []
+    for i, doc in enumerate(docs):
+        sign = 1.0 if i % 2 == 0 else -1.0
+        entities.append(
+            Entity(
+                doc_id=doc.id,
+                entity_type=EntityType.OBJECTIVE,
+                text="objective",
+                section="abstract",
+                page_number=1,
+                sentence_span="An objective sentence.",
+                embedding=[sign, 0.2, 0.1],
+            )
+        )
+
+    scores = score_corpus(docs, entities)
+    assert len(scores) == 10  # 5 choose 2, none dropped

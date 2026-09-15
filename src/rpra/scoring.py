@@ -40,6 +40,11 @@ _DEFAULT_WEIGHTS = {
 # ---------------------------------------------------------------------------
 
 
+def _clamp(value: float) -> float:
+    """Confine a similarity to [0, 1], the range a relatedness score occupies."""
+    return min(max(float(value), 0.0), 1.0)
+
+
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     """Cosine similarity between two embedding vectors."""
     if not a or not b:
@@ -149,11 +154,17 @@ def compute_relationship_score(
     """Compute the five-dimensional weighted relationship score."""
     w = weights or _DEFAULT_WEIGHTS
 
-    obj_sim = _objective_similarity(entities_a, entities_b)
-    meth_sim = _methodology_similarity(entities_a, entities_b)
-    ds_overlap = _dataset_overlap(entities_a, entities_b)
-    res_sim = _results_metrics_similarity(entities_a, entities_b)
-    cit_overlap = _citation_overlap(doc_a, doc_b)
+    # Cosine similarity ranges over [-1, 1], but a *relatedness* score does not:
+    # two papers pointing in opposite directions in vector space are unrelated,
+    # not negatively related. Clamping here rather than letting the model reject
+    # the value matters, because RelationshipScore requires >= 0 and a rejected
+    # score is a silently dropped pair. With the TF-IDF backend, whose random
+    # projection produces negatives routinely, that lost 203 of 435 pairs.
+    obj_sim = _clamp(_objective_similarity(entities_a, entities_b))
+    meth_sim = _clamp(_methodology_similarity(entities_a, entities_b))
+    ds_overlap = _clamp(_dataset_overlap(entities_a, entities_b))
+    res_sim = _clamp(_results_metrics_similarity(entities_a, entities_b))
+    cit_overlap = _clamp(_citation_overlap(doc_a, doc_b))
 
     composite = (
         w["objective"] * obj_sim
