@@ -217,14 +217,12 @@ evidence list. *Estimate: 2 days.*
 - **Extraction recall.** The heuristic backend is precision-tuned; its gazetteer
   is ML-centric and will under-perform on other fields. Options: expand the
   gazetteer per domain, or add a local NER model.
-- **Segmentation.** `page_end` is set equal to `page_start` for every segment,
-  so multi-page sections report the wrong page range. Two-column PDFs are not
-  handled — PyMuPDF returns interleaved text.
-- **Title inference.** Currently the first line over 10 characters, which picks
-  up journal headers on some layouts. PDF metadata should be tried first.
-- **No evaluation set.** Precision and recall of contradiction and gap detection
-  are unmeasured. The sample corpus has known planted answers and could be
-  extended into a labelled benchmark.
+- **Contradiction precision** is the weakest remaining component. Successive
+  gates took the real corpus from 1454 findings to 10, but a minority are still
+  comparisons rather than conflicts. The residual cause is that two sentences
+  can share a dataset, a metric and a polarity while describing different
+  experimental conditions, which surface text does not distinguish. Fixing this
+  properly needs the experimental setting modelled, not just the sentence.
 
 ### Phase 4 — Deployment
 
@@ -256,6 +254,50 @@ rpra run --extraction-backend llm
 
 Expected on the sample corpus: 6 documents, ~136 entities, 22 bridge concepts,
 164 graph nodes, 6 contradictions, 52 research gaps, ~14 s.
+
+---
+
+## 6a. Measured results
+
+Run `python scripts/evaluate_corpus.py` to reproduce these. The corpus is 30
+arXiv papers in four topical clusters; the cluster assignment is the ground
+truth for relationship ranking.
+
+### Segmentation
+
+| Metric | Before | After |
+|---|---|---|
+| Split by detected headings | — | **30/30 (100%)** |
+| Papers yielding zero sections | 1 (ALBERT) | **0** |
+| Worst over-segmentation | 186 sections (CLIP) | **8** |
+| Section recall (8 sections × 30 papers) | — | **215/240 (90%)** |
+
+Per-section recall: introduction 30/30, references 30/30, abstract 29/30,
+conclusion 29/30, experiments 28/30, related work 25/30, methodology 23/30,
+results 21/30.
+
+### Relationship ranking
+
+| Metric | Value |
+|---|---|
+| precision@5 | 80% |
+| precision@10 | **90%** |
+| precision@20 | 85% |
+| precision@30 | 80% |
+| Random baseline | 23% |
+| Mean within-cluster score | 0.478 |
+| Mean cross-cluster score | 0.352 |
+| Separation | +0.125 |
+
+The single miss in the top 10 is MoCo ↔ ResNet. That is arguably a ground-truth
+artefact rather than a system error: MoCo uses ResNet as its backbone and
+reports ImageNet numbers, so the two really are related — the cluster labels
+simply put them in different groups.
+
+### Findings
+
+10 contradictions and 60 research gaps. Neither has ground truth, so both are
+reported rather than scored.
 
 ---
 
