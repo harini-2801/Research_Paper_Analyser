@@ -1,711 +1,1288 @@
 /* ==========================================================================
-   RPRA Frontend Application JS
-   Handles REST API, WebSockets, Cytoscape Graph Rendering, and Evidence Inspector
+   Research Paper Relationship Analyzer - web client
+
+   Talks to the FastAPI backend in rpra/server.py. Every fetch here maps to a
+   route defined there; if a shape changes, it changes in both places.
    ========================================================================== */
 
-// Base API configuration (supports Vercel standalone frontend connecting to remote Render backend)
-const API_BASE = window.API_BASE_URL || (window.location.origin.includes('localhost') || window.location.origin.includes('127.0.0.1') ? '' : 'http://127.0.0.1:8000');
-const WS_BASE = API_BASE.replace(/^http/, 'ws');
+(function () {
+  "use strict";
 
-let cy = null;
-let currentGraphData = null;
+  // When the page is served by the API itself, same-origin works. When it is
+  // served from a static host (Vercel), point it at the API with
+  // window.RPRA_API_BASE or ?api=https://host.
+  var API_BASE = (function () {
+    var fromQuery = new URLSearchParams(window.location.search).get("api");
+    if (fromQuery) return fromQuery.replace(/\/$/, "");
+    if (window.RPRA_API_BASE) return String(window.RPRA_API_BASE).replace(/\/$/, "");
+    return "";
+  })();
 
-// Initialize on DOM load
-document.addEventListener('DOMContentLoaded', () => {
-  setupTabs();
-  setupModals();
-  setupWeightSliders();
-  setupDropzone();
-  connectWebSocket();
-  fetchStatus();
-  fetchData();
+  var state = {
+    status: null,
+    documents: [],
+    contradictions: [],
+    gaps: [],
+    scores: [],
+    graph: { nodes: [], edges: [], bridge_entities: {} },
+    weights: { objective: 0.25, methodology: 0.25, dataset: 0.2, results_metrics: 0.2, citation: 0.1 },
+    draftWeights: null,
+    cy: null,
+    running: false,
+    selectedDoc: null,
+    confirmedOnly: false,
+  };
 
-  // Button Listeners
-  document.getElementById('btn-run-demo')?.addEventListener('click', () => runPipeline(true));
-  document.getElementById('btn-run-full')?.addEventListener('click', () => runPipeline(false));
-  document.getElementById('btn-fit-graph')?.addEventListener('click', () => cy && cy.fit());
-  document.getElementById('graph-search')?.addEventListener('input', filterGraphNodes);
-});
-
-// ----------------------------------------------------------------------
-// WebSocket Progress Listener
-// ----------------------------------------------------------------------
-function connectWebSocket() {
-  const wsUrl = `${WS_BASE}/ws/progress`;
-  const wsStatusText = document.getElementById('ws-status-text');
-  const wsStatusDot = document.querySelector('#ws-status span');
-
-  try {
-    const ws = new WebSocket(wsUrl);
-
-    ws.onopen = () => {
-      if (wsStatusText) wsStatusText.innerText = 'Connected';
-      if (wsStatusDot) wsStatusDot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-ping';
-    };
-
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      updateProgressPanel(data);
-    };
-
-    ws.onclose = () => {
-      if (wsStatusText) wsStatusText.innerText = 'Disconnected';
-      if (wsStatusDot) wsStatusDot.className = 'w-2 h-2 rounded-full bg-rose-500';
-      setTimeout(connectWebSocket, 5000);
-    };
-
-    ws.onerror = () => {
-      if (wsStatusText) wsStatusText.innerText = 'Offline Mode';
-      if (wsStatusDot) wsStatusDot.className = 'w-2 h-2 rounded-full bg-amber-500';
-    };
-  } catch (err) {
-    console.warn('WebSocket connection skipped:', err);
-  }
-}
-
-// ----------------------------------------------------------------------
-// REST API Data Fetching
-// ----------------------------------------------------------------------
-async function fetchStatus() {
-  try {
-    const res = await fetch(`${API_BASE}/api/status`);
-    const data = await res.json();
-
-    document.getElementById('stat-papers-count').innerText = data.pdf_count || 0;
-    document.getElementById('stat-papers-sub').innerText = `${data.pdf_count} PDFs in corpus`;
-    document.getElementById('stat-kg-count').innerHTML = `${data.kg_nodes} <span class="text-xs font-normal text-slate-400">nodes</span>`;
-    document.getElementById('stat-kg-sub').innerText = `${data.kg_edges} edges connected`;
-    document.getElementById('stat-contradictions-count').innerText = data.contradictions_count || 0;
-    document.getElementById('stat-gaps-count').innerText = data.gaps_count || 0;
-
-    if (data.status === 'running') {
-      showProgressPanel();
-    }
-  } catch (err) {
-    console.error('Failed to fetch status:', err);
-  }
-}
-
-async function fetchData() {
-  await Promise.all([
-    fetchGraph(),
-    fetchContradictions(),
-    fetchGaps(),
-    fetchDocuments(),
-    fetchScores()
-  ]);
-}
-
-async function runPipeline(skipExtraction) {
-  try {
-    showProgressPanel();
-    const res = await fetch(`${API_BASE}/api/run`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ skip_extraction: skipExtraction, skip_explanation: false })
-    });
-    const data = await res.json();
-    console.log('Pipeline started:', data);
-  } catch (err) {
-    alert('Failed to trigger pipeline execution: ' + err.message);
-  }
-}
-
-// ----------------------------------------------------------------------
-// Progress Panel Updates
-// ----------------------------------------------------------------------
-function showProgressPanel() {
-  const panel = document.getElementById('progress-panel');
-  if (panel) panel.classList.remove('hidden');
-}
-
-function hideProgressPanel() {
-  const panel = document.getElementById('progress-panel');
-  if (panel) panel.classList.add('hidden');
-}
-
-function updateProgressPanel(data) {
-  showProgressPanel();
-
-  const stageBadge = document.getElementById('progress-stage-badge');
-  const progressBar = document.getElementById('progress-bar');
-  const progressMessage = document.getElementById('progress-message');
-  const progressElapsed = document.getElementById('progress-elapsed');
-
-  if (stageBadge) stageBadge.innerText = data.stage.toUpperCase();
-  if (progressMessage) progressMessage.innerText = data.message;
-  if (progressElapsed && data.elapsed_seconds) {
-    progressElapsed.innerText = `${data.elapsed_seconds}s`;
-  }
-
-  // Calculate stage percentage
-  const stages = ['ingestion', 'classification', 'extraction', 'scoring', 'kg_construction', 'contradiction_detection', 'gap_discovery', 'explanation', 'export', 'pipeline'];
-  const idx = stages.indexOf(data.stage);
-  const pct = Math.max(10, Math.min(100, Math.round(((idx + 1) / stages.length) * 100)));
-
-  if (progressBar) progressBar.style.width = `${pct}%`;
-
-  if (data.status === 'complete' && data.stage === 'pipeline') {
-    setTimeout(() => {
-      fetchStatus();
-      fetchData();
-      hideProgressPanel();
-    }, 1500);
-  }
-}
-
-// ----------------------------------------------------------------------
-// Knowledge Graph Rendering (Cytoscape.js)
-// ----------------------------------------------------------------------
-async function fetchGraph() {
-  try {
-    const res = await fetch(`${API_BASE}/api/graph`);
-    const data = await res.json();
-    currentGraphData = data;
-
-    const placeholder = document.getElementById('cy-placeholder');
-    if (!data.nodes || data.nodes.length === 0) {
-      if (placeholder) placeholder.classList.remove('hidden');
-      return;
-    }
-
-    if (placeholder) placeholder.classList.add('hidden');
-    renderCytoscape(data);
-  } catch (err) {
-    console.error('Failed to fetch graph:', err);
-  }
-}
-
-function renderCytoscape(data) {
-  const container = document.getElementById('cy-container');
-  if (!container) return;
-
-  const elements = [
-    ...data.nodes.map(n => ({
-      data: {
-        id: n.data.id,
-        label: n.data.label,
-        type: n.data.type,
-        doc_id: n.data.doc_id,
-        is_bridge: n.data.is_bridge,
-      }
-    })),
-    ...data.edges.map(e => ({
-      data: {
-        id: e.data.id,
-        source: e.data.source,
-        target: e.data.target,
-        label: e.data.label,
-        sentence: e.data.sentence,
-        doc_id: e.data.doc_id,
-        page: e.data.page,
-        section: e.data.section,
-      }
-    }))
+  var STAGES = [
+    "ingestion", "citations", "classification", "extraction", "embedding",
+    "scoring", "kg_construction", "contradiction_detection", "gap_discovery",
+    "explanation", "export",
   ];
 
-  cy = cytoscape({
-    container: container,
-    elements: elements,
-    style: [
-      {
-        selector: 'node',
-        style: {
-          'label': 'data(label)',
-          'color': '#f8fafc',
-          'font-size': '10px',
-          'font-family': 'Plus Jakarta Sans',
-          'text-valign': 'bottom',
-          'text-margin-y': 4,
-          'width': 28,
-          'height': 28,
-          'background-color': '#64748b',
-          'border-width': 2,
-          'border-color': 'rgba(255, 255, 255, 0.2)',
-          'transition-property': 'background-color, border-width, width, height',
-          'transition-duration': '0.3s'
-        }
-      },
-      {
-        selector: 'node[type = "document"]',
-        style: { 'background-color': '#3b82f6', 'width': 36, 'height': 36, 'shape': 'rectangle' }
-      },
-      {
-        selector: 'node[type = "objective"]',
-        style: { 'background-color': '#10b981' }
-      },
-      {
-        selector: 'node[type = "methodology"]',
-        style: { 'background-color': '#14b8a6' }
-      },
-      {
-        selector: 'node[type = "dataset"]',
-        style: { 'background-color': '#a855f7' }
-      },
-      {
-        selector: 'node[type = "model"]',
-        style: { 'background-color': '#f59e0b' }
-      },
-      {
-        selector: 'node[type = "metric"]',
-        style: { 'background-color': '#06b6d4' }
-      },
-      {
-        selector: 'node[type = "limitation"], node[type = "research_gap"]',
-        style: { 'background-color': '#ef4444' }
-      },
-      {
-        selector: 'node[?is_bridge]',
-        style: {
-          'border-width': 4,
-          'border-color': '#ec4899',
-          'width': 40,
-          'height': 40,
-          'font-weight': 'bold'
-        }
-      },
-      {
-        selector: 'edge',
-        style: {
-          'width': 1.5,
-          'line-color': 'rgba(148, 163, 184, 0.3)',
-          'target-arrow-color': 'rgba(148, 163, 184, 0.5)',
-          'target-arrow-shape': 'triangle',
-          'curve-style': 'bezier',
-          'label': 'data(label)',
-          'font-size': '8px',
-          'color': '#94a3b8',
-          'text-rotation': 'autorotate'
-        }
-      },
-      {
-        selector: 'node:selected',
-        style: {
-          'border-color': '#38bdf8',
-          'border-width': 4,
-          'shadow-blur': 20,
-          'shadow-color': '#38bdf8'
-        }
-      }
-    ],
-    layout: {
-      name: 'cose',
-      animate: true,
-      animationDuration: 800,
-      padding: 30
-    }
-  });
+  var STAGE_LABELS = {
+    ingestion: "Ingesting PDFs",
+    citations: "Parsing references",
+    classification: "Classifying",
+    extraction: "Extracting entities",
+    embedding: "Embedding",
+    scoring: "Scoring pairs",
+    kg_construction: "Building graph",
+    contradiction_detection: "Finding contradictions",
+    gap_discovery: "Discovering gaps",
+    explanation: "Explaining",
+    export: "Exporting",
+    pipeline: "Pipeline",
+  };
 
-  // Node Selection Listener for Evidence Inspector
-  cy.on('tap', 'node', (evt) => {
-    const node = evt.target;
-    inspectNode(node.data());
-  });
+  var WEIGHT_LABELS = {
+    objective: "Objective",
+    methodology: "Methodology",
+    dataset: "Dataset",
+    results_metrics: "Results & metrics",
+    citation: "Citation",
+  };
 
-  cy.on('tap', 'edge', (evt) => {
-    const edge = evt.target;
-    inspectEdge(edge.data());
-  });
-}
+  // Shape is the secondary encoding for entity type, so identity never rests
+  // on hue alone. Keys match EntityType in rpra/models.py.
+  var ENTITY_SHAPES = {
+    dataset: "hexagon",
+    model: "round-rectangle",
+    methodology: "ellipse",
+    evaluation_metric: "triangle",
+    quantitative_result: "diamond",
+    objective: "pentagon",
+    limitation: "vee",
+    research_gap: "star",
+  };
 
-function filterGraphNodes(evt) {
-  if (!cy) return;
-  const q = evt.target.value.toLowerCase();
-  cy.nodes().forEach(node => {
-    const label = node.data('label').toLowerCase();
-    if (!q || label.includes(q)) {
-      node.style('opacity', 1);
-    } else {
-      node.style('opacity', 0.15);
-    }
-  });
-}
+  // ------------------------------------------------------------------
+  // Utilities
+  // ------------------------------------------------------------------
 
-// ----------------------------------------------------------------------
-// Evidence Inspector Sidebar Updates
-// ----------------------------------------------------------------------
-function inspectNode(data) {
-  const drawer = document.getElementById('evidence-drawer-content');
-  if (!drawer) return;
+  function $(id) { return document.getElementById(id); }
+  function el(tag, cls) { var n = document.createElement(tag); if (cls) n.className = cls; return n; }
 
-  drawer.innerHTML = `
-    <div class="glass-card p-4 rounded-xl border border-indigo-500/30 space-y-3">
-      <div class="flex items-center justify-between">
-        <span class="px-2 py-0.5 rounded text-[10px] font-bold font-mono bg-indigo-500/20 text-indigo-300 uppercase">${data.type}</span>
-        ${data.is_bridge ? '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-pink-500/20 text-pink-300">Bridge Entity</span>' : ''}
-      </div>
-      <h4 class="text-sm font-bold text-white">${data.label}</h4>
-      <div class="text-slate-400 space-y-1">
-        <p><strong class="text-slate-300">ID:</strong> ${data.id}</p>
-        <p><strong class="text-slate-300">Doc ID:</strong> ${data.doc_id || 'Cross-document'}</p>
-      </div>
-    </div>
-  `;
-}
-
-function inspectEdge(data) {
-  const drawer = document.getElementById('evidence-drawer-content');
-  if (!drawer) return;
-
-  drawer.innerHTML = `
-    <div class="glass-card p-4 rounded-xl border border-purple-500/30 space-y-3">
-      <div class="flex items-center justify-between">
-        <span class="px-2 py-0.5 rounded text-[10px] font-bold font-mono bg-purple-500/20 text-purple-300 uppercase">Relation Edge</span>
-        <span class="text-slate-400">${data.label}</span>
-      </div>
-      <div class="text-slate-400 space-y-1">
-        <p><strong class="text-slate-300">Source:</strong> ${data.source}</p>
-        <p><strong class="text-slate-300">Target:</strong> ${data.target}</p>
-        <p><strong class="text-slate-300">Document:</strong> ${data.doc_id || 'N/A'}</p>
-        <p><strong class="text-slate-300">Section:</strong> ${data.section || 'N/A'}</p>
-        <p><strong class="text-slate-300">Page:</strong> ${data.page || 'N/A'}</p>
-      </div>
-      ${data.sentence ? `
-        <div class="p-3 rounded-lg bg-slate-950/60 border border-white/10 italic text-slate-300">
-          "${data.sentence}"
-        </div>
-      ` : ''}
-    </div>
-  `;
-}
-
-// ----------------------------------------------------------------------
-// Contradictions Hub
-// ----------------------------------------------------------------------
-async function fetchContradictions() {
-  try {
-    const res = await fetch(`${API_BASE}/api/contradictions`);
-    const data = await res.json();
-    const container = document.getElementById('contradictions-list');
-    if (!container) return;
-
-    if (data.length === 0) {
-      container.innerHTML = `
-        <div class="glass-card p-8 rounded-2xl border border-white/10 text-center text-slate-400">
-          <i data-lucide="shield-check" class="w-10 h-10 text-slate-600 mx-auto mb-2"></i>
-          <p class="text-sm">No contradictions detected yet. Trigger a pipeline run to inspect claims.</p>
-        </div>
-      `;
-      lucide.createIcons();
-      return;
-    }
-
-    container.innerHTML = data.map(c => `
-      <div class="glass-card p-5 rounded-2xl border ${c.confirmed ? 'border-rose-500/40 bg-rose-950/10' : 'border-amber-500/30'} space-y-4">
-        <div class="flex items-center justify-between">
-          <div class="flex items-center gap-3">
-            <span class="px-3 py-1 rounded-full text-xs font-bold font-mono ${c.confirmed ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40' : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'}">
-              ${c.confirmed ? 'Confirmed Contradiction' : 'Unconfirmed Candidate'}
-            </span>
-            <span class="text-xs text-slate-400">Bridge Entity: <strong class="text-pink-400">${c.bridge_entity || 'N/A'}</strong></span>
-          </div>
-          <div class="flex items-center gap-3 text-xs">
-            <span>NLI Conf: <strong class="font-mono text-cyan-400">${(c.nli_confidence * 100).toFixed(0)}%</strong></span>
-            <span>Methodology Sim: <strong class="font-mono text-purple-400">${c.methodology_similarity}</strong></span>
-          </div>
-        </div>
-
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <!-- Claim 1 -->
-          <div class="claim-card-a p-4 rounded-xl space-y-2">
-            <div class="flex items-center justify-between text-[11px] text-slate-400">
-              <span class="font-bold text-indigo-400">${c.claim_1.doc_id}</span>
-              <span>${c.claim_1.section || 'Section'} • Page ${c.claim_1.page || 1}</span>
-            </div>
-            <p class="text-xs text-slate-200 leading-relaxed font-mono">"${c.claim_1.sentence || c.claim_1.text}"</p>
-          </div>
-
-          <!-- Claim 2 -->
-          <div class="claim-card-b p-4 rounded-xl space-y-2">
-            <div class="flex items-center justify-between text-[11px] text-slate-400">
-              <span class="font-bold text-pink-400">${c.claim_2.doc_id}</span>
-              <span>${c.claim_2.section || 'Section'} • Page ${c.claim_2.page || 1}</span>
-            </div>
-            <p class="text-xs text-slate-200 leading-relaxed font-mono">"${c.claim_2.sentence || c.claim_2.text}"</p>
-          </div>
-        </div>
-
-        <!-- Grounded RAG Explanation -->
-        <div class="p-4 rounded-xl bg-slate-950/60 border border-white/10 text-xs text-slate-300 space-y-1">
-          <p class="font-semibold text-slate-200 flex items-center gap-1.5">
-            <i data-lucide="sparkles" class="w-3.5 h-3.5 text-indigo-400"></i>
-            <span>Grounded Evidence Explanation</span>
-          </p>
-          <p class="text-slate-300 leading-relaxed">${c.explanation}</p>
-        </div>
-      </div>
-    `).join('');
-
-    lucide.createIcons();
-  } catch (err) {
-    console.error('Failed to fetch contradictions:', err);
-  }
-}
-
-// ----------------------------------------------------------------------
-// Research Gaps Explorer
-// ----------------------------------------------------------------------
-async function fetchGaps() {
-  try {
-    const res = await fetch(`${API_BASE}/api/gaps`);
-    const data = await res.json();
-    const container = document.getElementById('gaps-list');
-    if (!container) return;
-
-    if (data.length === 0) {
-      container.innerHTML = `
-        <div class="glass-card p-8 rounded-2xl border border-white/10 text-center text-slate-400 col-span-2">
-          <i data-lucide="compass" class="w-10 h-10 text-slate-600 mx-auto mb-2"></i>
-          <p class="text-sm">No research gaps discovered yet. Run pipeline analysis on your corpus.</p>
-        </div>
-      `;
-      lucide.createIcons();
-      return;
-    }
-
-    container.innerHTML = data.map(g => `
-      <div class="glass-card p-5 rounded-2xl border border-amber-500/30 bg-amber-950/10 space-y-4 flex flex-col justify-between">
-        <div class="space-y-3">
-          <div class="flex items-center justify-between">
-            <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 font-mono">
-              Novelty Score: ${(g.novelty_score * 100).toFixed(0)}%
-            </span>
-            <span class="text-xs text-slate-400">Bridge Entity: <strong class="text-pink-400">${g.entity}</strong></span>
-          </div>
-
-          <h4 class="text-sm font-bold text-white">${g.description}</h4>
-
-          <div class="p-3 rounded-xl bg-slate-950/60 border border-white/10 text-xs text-slate-300 space-y-1">
-            <p class="font-semibold text-slate-200">Opportunity Grounding:</p>
-            <p class="text-slate-400">${g.explanation}</p>
-          </div>
-        </div>
-
-        <div class="pt-3 border-t border-white/10 flex items-center justify-between text-xs text-slate-400">
-          <span>Connected Papers: <strong class="text-indigo-300">${g.doc_1_id} ↔ ${g.doc_2_id}</strong></span>
-          <span>Density: <strong class="font-mono text-cyan-400">${g.connection_density}</strong></span>
-        </div>
-      </div>
-    `).join('');
-
-    lucide.createIcons();
-  } catch (err) {
-    console.error('Failed to fetch research gaps:', err);
-  }
-}
-
-// ----------------------------------------------------------------------
-// Documents & Relationship Scores
-// ----------------------------------------------------------------------
-async function fetchDocuments() {
-  try {
-    const res = await fetch(`${API_BASE}/api/documents`);
-    const data = await res.json();
-    const tbody = document.getElementById('docs-table-body');
-    if (!tbody) return;
-
-    if (data.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="6" class="py-4 text-center text-slate-500">No documents ingested yet.</td></tr>`;
-      return;
-    }
-
-    tbody.innerHTML = data.map(d => `
-      <tr class="hover:bg-slate-900/40 transition-colors">
-        <td class="py-3 px-4 font-mono font-bold text-indigo-400">${d.doc_id}</td>
-        <td class="py-3 px-4 text-slate-200">${d.title}</td>
-        <td class="py-3 px-4">
-          <span class="px-2 py-0.5 rounded text-[11px] font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-            ${d.category}
-          </span>
-        </td>
-        <td class="py-3 px-4 font-mono text-cyan-400">${(d.category_confidence * 100).toFixed(0)}%</td>
-        <td class="py-3 px-4 font-mono">${d.total_pages}</td>
-        <td class="py-3 px-4 text-slate-400">${d.segments.join(', ')}</td>
-      </tr>
-    `).join('');
-  } catch (err) {
-    console.error('Failed to fetch documents:', err);
-  }
-}
-
-async function fetchScores() {
-  try {
-    const res = await fetch(`${API_BASE}/api/scores`);
-    const data = await res.json();
-    const container = document.getElementById('scores-container');
-    if (!container) return;
-
-    if (data.length === 0) {
-      container.innerHTML = `<p class="text-xs text-slate-500 col-span-2">Run scoring to calculate relatedness across 5 dimensions.</p>`;
-      return;
-    }
-
-    container.innerHTML = data.map(s => `
-      <div class="glass-card p-4 rounded-xl border border-white/10 space-y-3">
-        <div class="flex items-center justify-between">
-          <span class="font-bold text-indigo-300 text-xs">${s.doc_1_id} ↔ ${s.doc_2_id}</span>
-          <span class="text-sm font-bold font-mono text-emerald-400">Score: ${s.composite_score}</span>
-        </div>
-        <div class="grid grid-cols-5 gap-2 text-[10px] text-center font-mono">
-          <div class="p-1.5 rounded bg-slate-900/60"><span class="text-slate-500 block">Obj</span>${s.components.objective}</div>
-          <div class="p-1.5 rounded bg-slate-900/60"><span class="text-slate-500 block">Meth</span>${s.components.methodology}</div>
-          <div class="p-1.5 rounded bg-slate-900/60"><span class="text-slate-500 block">DS</span>${s.components.dataset}</div>
-          <div class="p-1.5 rounded bg-slate-900/60"><span class="text-slate-500 block">Res</span>${s.components.results_metrics}</div>
-          <div class="p-1.5 rounded bg-slate-900/60"><span class="text-slate-500 block">Cite</span>${s.components.citation}</div>
-        </div>
-      </div>
-    `).join('');
-  } catch (err) {
-    console.error('Failed to fetch scores:', err);
-  }
-}
-
-// ----------------------------------------------------------------------
-// UI Helpers (Tabs, Modals, Sliders, Dropzone)
-// ----------------------------------------------------------------------
-function setupTabs() {
-  const btns = document.querySelectorAll('.tab-btn');
-  const contents = document.querySelectorAll('.tab-content');
-
-  btns.forEach(btn => {
-    btn.addEventListener('click', () => {
-      const target = btn.getAttribute('data-tab');
-      btns.forEach(b => b.classList.remove('active'));
-      contents.forEach(c => c.classList.add('hidden'));
-
-      btn.classList.add('active');
-      const activeContent = document.getElementById(target);
-      if (activeContent) activeContent.classList.remove('hidden');
-
-      if (target === 'tab-graph' && cy) {
-        setTimeout(() => cy.resize(), 100);
-      }
-    });
-  });
-}
-
-function setupModals() {
-  const modalUpload = document.getElementById('modal-upload');
-  const modalWeights = document.getElementById('modal-weights');
-
-  document.getElementById('btn-open-upload')?.addEventListener('click', () => modalUpload?.classList.remove('hidden'));
-  document.getElementById('btn-close-upload')?.addEventListener('click', () => modalUpload?.classList.add('hidden'));
-
-  document.getElementById('btn-open-weights')?.addEventListener('click', () => modalWeights?.classList.remove('hidden'));
-  document.getElementById('btn-close-weights')?.addEventListener('click', () => modalWeights?.classList.add('hidden'));
-}
-
-function setupWeightSliders() {
-  const sliders = ['obj', 'meth', 'ds', 'res', 'cite'].map(key => ({
-    key: key,
-    slider: document.getElementById(`slider-w-${key}`),
-    val: document.getElementById(`val-w-${key}`)
-  }));
-
-  const weightSum = document.getElementById('weight-sum');
-
-  function updateSum() {
-    let sum = 0;
-    sliders.forEach(item => {
-      if (item.slider && item.val) {
-        const v = parseFloat(item.slider.value);
-        item.val.innerText = v.toFixed(2);
-        sum += v;
-      }
-    });
-    if (weightSum) {
-      weightSum.innerText = sum.toFixed(2);
-      weightSum.className = Math.abs(sum - 1.0) < 1e-4 ? 'font-mono text-emerald-400' : 'font-mono text-rose-400';
-    }
+  function esc(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
 
-  sliders.forEach(item => {
-    item.slider?.addEventListener('input', updateSum);
-  });
+  function cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
 
-  document.getElementById('btn-save-weights')?.addEventListener('click', async () => {
-    const payload = {
-      objective: parseFloat(document.getElementById('slider-w-obj').value),
-      methodology: parseFloat(document.getElementById('slider-w-meth').value),
-      dataset: parseFloat(document.getElementById('slider-w-ds').value),
-      results_metrics: parseFloat(document.getElementById('slider-w-res').value),
-      citation: parseFloat(document.getElementById('slider-w-cite').value)
-    };
+  function fmt(n, digits) {
+    if (n == null || isNaN(n)) return "0";
+    return Number(n).toFixed(digits == null ? 2 : digits);
+  }
+
+  function shortDoc(id) {
+    if (!id) return "";
+    return id.length > 30 ? id.slice(0, 28) + "…" : id;
+  }
+
+  function titleFor(docId) {
+    var doc = state.documents.find(function (d) { return d.doc_id === docId; });
+    return doc && doc.title ? doc.title : docId;
+  }
+
+  async function api(path, options) {
+    var response = await fetch(API_BASE + path, options);
+    if (!response.ok) {
+      var detail = response.statusText;
+      try {
+        var body = await response.json();
+        detail = body.detail || detail;
+        if (Array.isArray(detail)) detail = detail.map(function (d) { return d.msg; }).join("; ");
+      } catch (e) { /* non-JSON error body */ }
+      throw new Error(detail);
+    }
+    return response.json();
+  }
+
+  function toast(message, kind) {
+    var host = $("toasts");
+    var node = el("div", "toast" + (kind ? " toast--" + kind : ""));
+    var glyph = kind === "error"
+      ? '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/>'
+      : '<path d="M20 6 9 17l-5-5"/>';
+    node.innerHTML =
+      '<svg class="toast__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+      'stroke-linecap="round" stroke-linejoin="round">' + glyph + "</svg>" +
+      "<span>" + esc(message) + "</span>";
+    host.appendChild(node);
+    setTimeout(function () { node.remove(); }, 4800);
+  }
+
+  function emptyState(icon, title, body) {
+    return '<div class="empty">' +
+      '<svg class="empty__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+      'stroke-linecap="round" stroke-linejoin="round">' + icon + "</svg>" +
+      '<p class="empty__title">' + esc(title) + "</p>" +
+      '<p class="empty__body">' + esc(body) + "</p></div>";
+  }
+
+  var ICON_SEARCH = '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>';
+
+  // ------------------------------------------------------------------
+  // Theme
+  // ------------------------------------------------------------------
+
+  function applyTheme(theme) {
+    if (theme) {
+      document.documentElement.setAttribute("data-theme", theme);
+      try { localStorage.setItem("rpra-theme", theme); } catch (e) { /* private mode */ }
+    }
+    var dark = document.documentElement.getAttribute("data-theme") === "dark" ||
+      (!document.documentElement.hasAttribute("data-theme") &&
+        window.matchMedia("(prefers-color-scheme: dark)").matches);
+
+    $("icon-theme").innerHTML = dark
+      ? '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>'
+      : '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>';
+
+    if (state.cy) applyGraphStyle(state.cy);
+    if (state.scores.length) renderRelationships();
+  }
+
+  function initTheme() {
+    var stored = null;
+    try { stored = localStorage.getItem("rpra-theme"); } catch (e) { /* ignore */ }
+    if (stored) document.documentElement.setAttribute("data-theme", stored);
+    applyTheme(null);
+  }
+
+  // ------------------------------------------------------------------
+  // WebSocket progress
+  // ------------------------------------------------------------------
+
+  function setConn(stateName, label) {
+    $("conn").setAttribute("data-state", stateName);
+    $("conn-label").textContent = label;
+  }
+
+  function connectSocket() {
+    var base = API_BASE || window.location.origin;
+    var url = base.replace(/^http/, "ws") + "/ws/progress";
+    var socket;
 
     try {
-      const res = await fetch(`${API_BASE}/api/config/weights`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json();
-      if (res.ok) {
-        alert('Weights updated successfully!');
-        document.getElementById('modal-weights')?.classList.add('hidden');
-      } else {
-        alert(data.detail || 'Failed to update weights.');
-      }
-    } catch (err) {
-      alert('Error saving weights: ' + err.message);
+      socket = new WebSocket(url);
+    } catch (e) {
+      setConn("down", "offline");
+      return;
     }
-  });
-}
 
-function setupDropzone() {
-  const dropzone = document.getElementById('dropzone');
-  const fileInput = document.getElementById('file-input');
-  const uploadStatus = document.getElementById('upload-status');
+    socket.onopen = function () {
+      setConn("live", "live");
+      // The server only uses inbound frames as a keepalive signal.
+      setInterval(function () {
+        if (socket.readyState === WebSocket.OPEN) socket.send("ping");
+      }, 25000);
+    };
 
-  if (!dropzone || !fileInput) return;
+    socket.onmessage = function (event) {
+      var payload;
+      try { payload = JSON.parse(event.data); } catch (e) { return; }
+      handleProgress(payload);
+    };
 
-  dropzone.addEventListener('click', () => fileInput.click());
+    socket.onclose = function () {
+      setConn("down", "reconnecting");
+      setTimeout(connectSocket, 3000);
+    };
 
-  dropzone.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    dropzone.classList.add('border-cyan-400');
-  });
+    socket.onerror = function () { setConn("down", "offline"); };
+  }
 
-  dropzone.addEventListener('dragleave', () => {
-    dropzone.classList.remove('border-cyan-400');
-  });
+  function handleProgress(event) {
+    var stageLabel = STAGE_LABELS[event.stage] || event.stage;
+    $("status-stage").textContent = stageLabel;
+    $("status-message").textContent = event.message || "";
 
-  dropzone.addEventListener('drop', (e) => {
-    e.preventDefault();
-    dropzone.classList.remove('border-cyan-400');
-    if (e.dataTransfer.files.length > 0) {
-      handleFiles(e.dataTransfer.files);
+    var index = STAGES.indexOf(event.stage);
+    if (index >= 0) {
+      var pct = Math.round(((index + 1) / STAGES.length) * 100);
+      $("status-fill").style.width = pct + "%";
     }
-  });
-
-  fileInput.addEventListener('change', () => {
-    if (fileInput.files.length > 0) {
-      handleFiles(fileInput.files);
+    if (event.elapsed_seconds) {
+      $("status-elapsed").textContent = fmt(event.elapsed_seconds, 1) + "s";
     }
-  });
 
-  async function handleFiles(files) {
-    for (const file of files) {
-      if (!file.name.endsWith('.pdf')) continue;
-      const formData = new FormData();
-      formData.append('file', file);
-
-      if (uploadStatus) uploadStatus.innerText = `Uploading ${file.name}...`;
-
-      try {
-        const res = await fetch(`${API_BASE}/api/upload`, {
-          method: 'POST',
-          body: formData
-        });
-        const data = await res.json();
-        if (res.ok) {
-          if (uploadStatus) uploadStatus.innerText = `Uploaded: ${file.name}`;
-          fetchStatus();
-        } else {
-          if (uploadStatus) uploadStatus.innerText = `Error: ${data.detail}`;
-        }
-      } catch (err) {
-        if (uploadStatus) uploadStatus.innerText = `Upload failed: ${err.message}`;
-      }
+    if (event.type === "complete") {
+      $("status-fill").style.width = "100%";
+      $("status-stage").textContent = "complete";
+      setRunning(false);
+      toast("Analysis complete in " + fmt(event.details && event.details.elapsed_seconds, 1) + "s", "success");
+      refreshAll();
+    } else if (event.type === "error" || (event.stage === "pipeline" && event.status === "failed")) {
+      // Only a pipeline-level failure is terminal. Per-document failures are
+      // expected on a corpus with one unreadable PDF and must not stop the UI.
+      setRunning(false);
+      setConn("live", "live");
+      toast(event.message || "Pipeline failed", "error");
+      $("status-stage").textContent = "failed";
+    } else if (event.status === "failed" && event.doc_id) {
+      toast(event.message || ("Could not process " + event.doc_id), "error");
     }
   }
-}
+
+  function setRunning(running) {
+    state.running = running;
+    $("btn-run").disabled = running;
+    $("btn-run").innerHTML = running
+      ? '<svg class="icon spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round"><path d="M12 2a10 10 0 0 1 10 10"/></svg> Running…'
+      : '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3l14 9-14 9V3z"/></svg> Run analysis';
+    setConn(running ? "busy" : "live", running ? "analysing" : "live");
+  }
+
+  // ------------------------------------------------------------------
+  // Data loading
+  // ------------------------------------------------------------------
+
+  async function refreshStatus() {
+    try {
+      var status = await api("/api/status");
+      state.status = status;
+      if (status.config && status.config.weights) {
+        state.weights = status.config.weights;
+      }
+      renderFigures();
+      renderCorpusRail();
+      $("backend-line").textContent =
+        (status.summary && status.summary.extraction_backend
+          ? status.summary.extraction_backend + " extraction · "
+          : "") +
+        (status.summary && status.summary.embedding_backend
+          ? status.summary.embedding_backend + " embeddings"
+          : "knowledge graph · contradictions · research gaps");
+      $("btn-export").disabled = !status.has_results;
+      if (status.status === "running" && !state.running) setRunning(true);
+    } catch (e) {
+      setConn("down", "api offline");
+    }
+  }
+
+  async function refreshAll() {
+    await refreshStatus();
+    var results = await Promise.allSettled([
+      api("/api/documents"),
+      api("/api/contradictions"),
+      api("/api/gaps"),
+      api("/api/scores"),
+      api("/api/graph"),
+    ]);
+
+    if (results[0].status === "fulfilled") state.documents = results[0].value;
+    if (results[1].status === "fulfilled") state.contradictions = results[1].value;
+    if (results[2].status === "fulfilled") state.gaps = results[2].value;
+    if (results[3].status === "fulfilled") state.scores = results[3].value;
+    if (results[4].status === "fulfilled") state.graph = results[4].value;
+
+    $("count-docs").textContent = state.documents.length;
+    $("count-contradictions").textContent = state.contradictions.length;
+    $("count-gaps").textContent = state.gaps.length;
+    $("count-scores").textContent = state.scores.length;
+
+    renderFigures();
+    renderCorpusRail();
+    renderGraph();
+    renderRelationships();
+    renderContradictions();
+    renderGaps();
+    renderDocuments();
+  }
+
+  // ------------------------------------------------------------------
+  // Figures
+  // ------------------------------------------------------------------
+
+  function renderFigures() {
+    var status = state.status || {};
+    var summary = status.summary || {};
+
+    $("fig-papers").textContent = status.pdf_count || 0;
+    $("fig-papers-note").textContent = summary.documents
+      ? summary.documents + " analysed"
+      : (status.pdf_count ? "not yet analysed" : "none ingested");
+
+    $("fig-nodes").textContent = summary.kg_nodes || 0;
+    $("fig-nodes-note").textContent = (summary.kg_edges || 0) + " edges";
+
+    $("fig-bridges").textContent = summary.bridge_entities || 0;
+    $("fig-bridges-note").textContent = (summary.entities || 0) + " entities total";
+
+    $("fig-contradictions").textContent = summary.contradictions || 0;
+    $("fig-contradictions-note").textContent = (summary.confirmed_contradictions || 0) + " confirmed";
+
+    $("fig-gaps").textContent = summary.gaps || 0;
+    $("fig-gaps-note").textContent = "novelty ranked";
+  }
+
+  // ------------------------------------------------------------------
+  // Corpus rail
+  // ------------------------------------------------------------------
+
+  function renderCorpusRail() {
+    var list = $("corpus-list");
+    var files = (state.status && state.status.pdf_files) || [];
+    $("corpus-count").textContent = files.length + (files.length === 1 ? " paper" : " papers");
+    list.innerHTML = "";
+
+    if (!files.length) {
+      var note = el("li");
+      note.className = "hint";
+      note.style.padding = "14px 10px";
+      note.textContent = "No papers yet. Drop PDFs below, or run scripts/make_sample_corpus.py to generate a sample corpus.";
+      list.appendChild(note);
+      return;
+    }
+
+    files.forEach(function (filename) {
+      var docId = filename.replace(/\.pdf$/i, "");
+      var doc = state.documents.find(function (d) { return d.doc_id === docId; });
+
+      var item = el("li", "corpus-item");
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", state.selectedDoc === docId ? "true" : "false");
+
+      var meta = doc
+        ? esc(doc.category) + " · " + doc.segment_count + " sections · p." + doc.total_pages
+        : "not analysed";
+
+      item.innerHTML =
+        '<svg class="corpus-item__glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+        'stroke-linecap="round" stroke-linejoin="round">' +
+        '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>' +
+        '<span class="corpus-item__body">' +
+        '<span class="corpus-item__title">' + esc(doc && doc.title ? doc.title : docId) + "</span>" +
+        '<span class="corpus-item__meta">' + meta + "</span></span>" +
+        '<button class="corpus-item__remove" title="Remove from corpus" aria-label="Remove ' + esc(filename) + '">' +
+        '<svg class="icon icon--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+        'stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>';
+
+      item.addEventListener("click", function (evt) {
+        if (evt.target.closest(".corpus-item__remove")) return;
+        state.selectedDoc = state.selectedDoc === docId ? null : docId;
+        renderCorpusRail();
+        if (doc) inspectDocument(doc);
+        if (state.cy) focusNode(docId);
+      });
+
+      item.querySelector(".corpus-item__remove").addEventListener("click", async function (evt) {
+        evt.stopPropagation();
+        try {
+          await api("/api/corpus/" + encodeURIComponent(filename), { method: "DELETE" });
+          toast("Removed " + filename, "success");
+          refreshStatus();
+        } catch (err) {
+          toast(err.message, "error");
+        }
+      });
+
+      list.appendChild(item);
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Knowledge graph
+  // ------------------------------------------------------------------
+
+  function applyGraphStyle(cy) {
+    var docColor = cssVar("--cat-document");
+    var bridgeColor = cssVar("--cat-bridge");
+    var entityColor = cssVar("--cat-entity");
+    var ink = cssVar("--ink-primary");
+    var muted = cssVar("--ink-muted");
+    var rule = cssVar("--rule-strong");
+    var surface = cssVar("--surface-1");
+
+    cy.style()
+      .resetToDefault()
+      .selector("node")
+      .style({
+        "background-color": entityColor,
+        shape: "ellipse",
+        width: 17,
+        height: 17,
+        label: "data(short_label)",
+        "font-size": 8,
+        "font-family": "Inter, system-ui, sans-serif",
+        color: muted,
+        "text-valign": "bottom",
+        "text-margin-y": 3,
+        "text-max-width": 88,
+        "text-wrap": "ellipsis",
+        "border-width": 1.5,
+        "border-color": surface,
+        "overlay-opacity": 0,
+      })
+      .selector('node[node_type = "document"]')
+      .style({
+        "background-color": docColor,
+        shape: "round-rectangle",
+        width: 42,
+        height: 26,
+        "font-size": 10,
+        "font-weight": 600,
+        color: ink,
+        "text-max-width": 132,
+        "text-wrap": "wrap",
+        "z-index": 10,
+      })
+      .selector('node[node_type = "bridge_entity"]')
+      .style({
+        "background-color": bridgeColor,
+        shape: "diamond",
+        width: 26,
+        height: 26,
+        "font-size": 9,
+        "font-weight": 600,
+        color: ink,
+        "z-index": 8,
+      });
+
+    // Shape per entity type: the secondary channel that keeps identity legible
+    // without relying on hue.
+    Object.keys(ENTITY_SHAPES).forEach(function (type) {
+      cy.style().selector('node[entity_type = "' + type + '"]').style({ shape: ENTITY_SHAPES[type] });
+    });
+
+    cy.style()
+      .selector("edge")
+      .style({
+        width: 1,
+        "line-color": rule,
+        "curve-style": "bezier",
+        "target-arrow-shape": "none",
+        opacity: 0.55,
+        "overlay-opacity": 0,
+      })
+      .selector('edge[edge_type = "contains"]')
+      .style({ "line-style": "dotted", opacity: 0.3, width: 0.8 })
+      .selector('edge[edge_type = "has_bridge_entity"]')
+      .style({ "line-color": bridgeColor, opacity: 0.5, width: 1.4 })
+      .selector('edge[edge_type = "relationship_score"]')
+      .style({
+        "line-color": docColor,
+        // Edge thickness carries the composite score, so the strongest
+        // relationships read first.
+        width: "mapData(composite_score, 0, 1, 0.6, 6)",
+        opacity: 0.75,
+        "curve-style": "straight",
+      })
+      .selector('edge[edge_type = "cites"]')
+      .style({
+        "line-color": docColor,
+        "target-arrow-shape": "triangle",
+        "target-arrow-color": docColor,
+        "arrow-scale": 0.7,
+        width: 1.6,
+        "line-style": "dashed",
+        opacity: 0.9,
+      })
+      .selector(".dimmed")
+      .style({ opacity: 0.07 })
+      .selector(".highlight")
+      .style({ "border-width": 3, "border-color": ink, "z-index": 30 })
+      .update();
+  }
+
+  function renderGraph() {
+    var host = $("graph-host");
+    var empty = $("graph-empty");
+    var nodes = state.graph.nodes || [];
+
+    if (!nodes.length) {
+      if (empty) empty.style.display = "";
+      if (state.cy) { state.cy.destroy(); state.cy = null; }
+      return;
+    }
+    if (empty) empty.style.display = "none";
+    if (state.cy) { state.cy.destroy(); state.cy = null; }
+
+    var cy = cytoscape({
+      container: host,
+      elements: { nodes: nodes, edges: state.graph.edges || [] },
+      wheelSensitivity: 0.22,
+      minZoom: 0.12,
+      maxZoom: 3.2,
+    });
+
+    applyGraphStyle(cy);
+    runLayout(cy);
+
+    cy.on("tap", "node", function (evt) {
+      var data = evt.target.data();
+      highlightNeighbourhood(cy, evt.target);
+      inspectNode(data);
+    });
+
+    cy.on("tap", "edge", function (evt) { inspectEdge(evt.target.data()); });
+
+    cy.on("tap", function (evt) {
+      if (evt.target === cy) {
+        cy.elements().removeClass("dimmed highlight");
+        clearInspector();
+      }
+    });
+
+    state.cy = cy;
+  }
+
+  function runLayout(cy) {
+    cy.layout({
+      name: "cose",
+      animate: false,
+      nodeRepulsion: 9000,
+      idealEdgeLength: 78,
+      edgeElasticity: 110,
+      gravity: 42,
+      numIter: 900,
+      randomize: true,
+      padding: 34,
+      nodeDimensionsIncludeLabels: true,
+    }).run();
+    cy.fit(undefined, 36);
+  }
+
+  function highlightNeighbourhood(cy, node) {
+    var neighbourhood = node.closedNeighborhood();
+    cy.elements().addClass("dimmed").removeClass("highlight");
+    neighbourhood.removeClass("dimmed");
+    node.addClass("highlight");
+  }
+
+  function focusNode(nodeId) {
+    if (!state.cy) return;
+    var node = state.cy.getElementById(nodeId);
+    if (!node || !node.length) return;
+    highlightNeighbourhood(state.cy, node);
+    state.cy.animate({ center: { eles: node }, zoom: 1.15 }, { duration: 320 });
+  }
+
+  function applyGraphFilter() {
+    if (!state.cy) return;
+    var query = $("graph-search").value.trim().toLowerCase();
+    var kind = $("graph-filter").value;
+
+    state.cy.nodes().forEach(function (node) {
+      var data = node.data();
+      var matchesQuery = !query || String(data.label || "").toLowerCase().indexOf(query) >= 0;
+      var matchesKind = kind === "all" || data.node_type === kind;
+      node.style("display", matchesQuery && matchesKind ? "element" : "none");
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Evidence inspector
+  // ------------------------------------------------------------------
+
+  function citation(evidence) {
+    var parts = [evidence.source_doc_id];
+    if (evidence.section) parts.push("§" + evidence.section);
+    if (evidence.page_number) parts.push("p." + evidence.page_number);
+    return parts.join(" · ");
+  }
+
+  function evidenceBlock(evidence, variant) {
+    if (!evidence || !evidence.sentence_span) return "";
+    return '<div class="evidence' + (variant ? " evidence--" + variant : "") + '">' +
+      '<div class="evidence__quote">“' + esc(evidence.sentence_span) + "”</div>" +
+      '<cite class="evidence__cite">' + esc(citation(evidence)) + "</cite></div>";
+  }
+
+  function setInspector(html) { $("inspector-body").innerHTML = html; }
+
+  function clearInspector() {
+    setInspector(emptyState(
+      '<path d="M3 3h18v18H3zM7 8h10M7 12h10M7 16h6"/>',
+      "Nothing selected",
+      "Select a graph node, a contradiction, or a research gap to see the verbatim sentences it was derived from, with section and page."
+    ));
+  }
+
+  function kv(pairs) {
+    return '<div class="kv">' + pairs.map(function (pair) {
+      return '<span class="kv__k">' + esc(pair[0]) + '</span><span class="kv__v">' + pair[1] + "</span>";
+    }).join("") + "</div>";
+  }
+
+  function inspectNode(data) {
+    var kindLabel = data.node_type === "document" ? "Paper"
+      : data.node_type === "bridge_entity" ? "Bridge concept" : "Entity";
+
+    var rows = [["Type", esc(kindLabel)]];
+    if (data.entity_type) rows.push(["Entity type", esc(data.entity_type.replace(/_/g, " "))]);
+    if (data.category) rows.push(["Category", esc(data.category)]);
+    if (data.doc_id) rows.push(["Paper", esc(data.doc_id)]);
+    if (data.section) rows.push(["Section", esc(data.section)]);
+    if (data.page_number) rows.push(["Page", esc(data.page_number)]);
+
+    var html = '<div class="inspector__section">' +
+      '<span class="eyebrow">' + esc(kindLabel) + "</span>" +
+      '<h3 style="font-size:14.5px;margin-top:5px">' + esc(data.label) + "</h3>" +
+      kv(rows) + "</div>";
+
+    if (data.sentence_span) {
+      html += '<div class="inspector__section"><span class="eyebrow">Source sentence</span>' +
+        evidenceBlock({
+          sentence_span: data.sentence_span,
+          source_doc_id: data.doc_id,
+          section: data.section,
+          page_number: data.page_number,
+        }) + "</div>";
+    }
+
+    if (data.node_type === "bridge_entity") {
+      var sharing = state.graph.bridge_entities[data.label] || [];
+      if (sharing.length) {
+        html += '<div class="inspector__section"><span class="eyebrow">Shared by ' +
+          sharing.length + ' papers</span><ul style="margin:7px 0 0;padding-left:16px;font-size:12px">' +
+          sharing.map(function (id) { return "<li>" + esc(titleFor(id)) + "</li>"; }).join("") +
+          "</ul></div>";
+      }
+    }
+
+    setInspector(html);
+  }
+
+  function inspectEdge(data) {
+    var rows = [["Relation", esc(String(data.edge_type).replace(/[-_]/g, " "))]];
+    if (data.composite_score != null) rows.push(["Score", fmt(data.composite_score, 3)]);
+    if (data.confidence != null) rows.push(["Confidence", fmt(data.confidence, 2)]);
+    if (data.is_cross_document) rows.push(["Scope", "cross-document"]);
+
+    var html = '<div class="inspector__section"><span class="eyebrow">Relation</span>' +
+      '<h3 style="font-size:14px;margin-top:5px">' + esc(shortDoc(data.source)) +
+      " → " + esc(shortDoc(data.target)) + "</h3>" + kv(rows) + "</div>";
+
+    if (data.sentence_span) {
+      html += '<div class="inspector__section"><span class="eyebrow">Evidence</span>' +
+        evidenceBlock({
+          sentence_span: data.sentence_span,
+          source_doc_id: data.source_doc_id,
+          section: data.section,
+          page_number: data.page_number,
+        }) + "</div>";
+    }
+    setInspector(html);
+  }
+
+  function inspectDocument(doc) {
+    var html = '<div class="inspector__section"><span class="eyebrow">Paper</span>' +
+      '<h3 style="font-size:14.5px;margin-top:5px">' + esc(doc.title) + "</h3>" +
+      kv([
+        ["ID", esc(doc.doc_id)],
+        ["Category", esc(doc.category) + " (" + fmt(doc.category_confidence, 2) + ")"],
+        ["Pages", esc(doc.total_pages)],
+        ["Sections", esc(doc.segment_count)],
+        ["References", esc(doc.reference_count)],
+      ]) + "</div>";
+
+    var related = state.scores
+      .filter(function (s) { return s.doc_a === doc.doc_id || s.doc_b === doc.doc_id; })
+      .slice(0, 5);
+
+    if (related.length) {
+      html += '<div class="inspector__section"><span class="eyebrow">Most related papers</span>';
+      related.forEach(function (score) {
+        var other = score.doc_a === doc.doc_id ? score.doc_b : score.doc_a;
+        html += '<div style="margin-top:9px">' +
+          '<div style="font-size:11.5px;margin-bottom:3px">' + esc(titleFor(other)) + "</div>" +
+          meterHtml(score.composite_score) + "</div>";
+      });
+      html += "</div>";
+    }
+    setInspector(html);
+  }
+
+  function meterHtml(value) {
+    var pct = Math.round(Math.max(0, Math.min(1, value || 0)) * 100);
+    return '<div class="meter"><span class="meter__track">' +
+      '<span class="meter__fill" style="width:' + pct + '%"></span></span>' +
+      '<span class="meter__value">' + fmt(value, 2) + "</span></div>";
+  }
+
+  // ------------------------------------------------------------------
+  // Relationships (sequential encoding: one hue, light to dark)
+  // ------------------------------------------------------------------
+
+  function rampColor(value) {
+    var steps = ["--seq-100", "--seq-200", "--seq-300", "--seq-400", "--seq-500", "--seq-600", "--seq-700"];
+    var index = Math.min(steps.length - 1, Math.max(0, Math.round((value || 0) * (steps.length - 1))));
+    return cssVar(steps[index]);
+  }
+
+  function renderRelationships() {
+    var area = $("relationships-area");
+    if (!state.scores.length) {
+      area.innerHTML = emptyState(ICON_SEARCH, "No relationship scores yet",
+        "Run the analysis to score every pair of papers across objective, methodology, dataset, results and citation similarity.");
+      return;
+    }
+
+    var docIds = state.documents.map(function (d) { return d.doc_id; });
+    if (!docIds.length) {
+      docIds = Array.from(new Set(state.scores.flatMap(function (s) { return [s.doc_a, s.doc_b]; })));
+    }
+
+    var lookup = {};
+    state.scores.forEach(function (s) {
+      lookup[s.doc_a + " " + s.doc_b] = s;
+      lookup[s.doc_b + " " + s.doc_a] = s;
+    });
+
+    // ---- Matrix ----
+    var html = '<div class="card"><div class="card__head">' +
+      '<div><span class="eyebrow">Pairwise composite score</span></div>' +
+      '<span class="hint">Darker means more strongly related</span></div>' +
+      '<div class="card__body"><div class="matrix-wrap"><table class="matrix">' +
+      "<thead><tr><th></th>";
+
+    docIds.forEach(function (id) {
+      html += "<th><span>" + esc(titleFor(id)) + "</span></th>";
+    });
+    html += "</tr></thead><tbody>";
+
+    docIds.forEach(function (rowId) {
+      html += "<tr><th>" + esc(titleFor(rowId)) + "</th>";
+      docIds.forEach(function (colId) {
+        if (rowId === colId) {
+          html += '<td class="is-diagonal">—</td>';
+          return;
+        }
+        var score = lookup[rowId + " " + colId];
+        var value = score ? score.composite_score : 0;
+        // Label colour flips on the dark half of the ramp so the number stays
+        // legible against its own cell.
+        var textColor = value > 0.55 ? "#ffffff" : cssVar("--ink-primary");
+        html += '<td style="background:' + rampColor(value) + ";color:" + textColor +
+          '" data-pair="' + esc(rowId) + "|" + esc(colId) + '" title="' +
+          esc(titleFor(rowId)) + " ↔ " + esc(titleFor(colId)) + ": " + fmt(value, 3) + '">' +
+          (value ? fmt(value, 2).replace("0.", ".") : "") + "</td>";
+      });
+      html += "</tr>";
+    });
+
+    html += "</tbody></table></div>" +
+      '<div class="scale"><span>0.0</span><span class="scale__ramp">' +
+      ["--seq-100", "--seq-200", "--seq-300", "--seq-400", "--seq-500", "--seq-600", "--seq-700"]
+        .map(function (step) { return '<span style="background:' + cssVar(step) + '"></span>'; }).join("") +
+      "</span><span>1.0</span></div></div></div>";
+
+    // ---- Ranked breakdown ----
+    html += '<div class="card"><div class="card__head"><span class="eyebrow">Strongest pairs, by dimension</span>' +
+      '<span class="hint">' + state.scores.length + " pairs scored</span></div>";
+
+    state.scores.slice(0, 12).forEach(function (score) {
+      html += '<div style="padding:13px 15px;border-bottom:1px solid var(--rule-hairline)">' +
+        '<div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline;flex-wrap:wrap">' +
+        '<div style="font-family:var(--font-display);font-size:13.5px;min-width:0">' +
+        esc(titleFor(score.doc_a)) + ' <span style="color:var(--ink-muted)">↔</span> ' +
+        esc(titleFor(score.doc_b)) + "</div>" +
+        '<div style="width:132px;flex:none">' + meterHtml(score.composite_score) + "</div></div>" +
+        '<div class="components">';
+
+      Object.keys(WEIGHT_LABELS).forEach(function (key) {
+        var value = score.components[key] || 0;
+        html += '<span class="components__name">' + WEIGHT_LABELS[key] + "</span>" +
+          '<span class="meter__track"><span class="meter__fill" style="width:' +
+          Math.round(value * 100) + "%;background:" + rampColor(value) + '"></span></span>' +
+          '<span class="components__weight">' + fmt(value, 2) + "</span>";
+      });
+
+      html += "</div></div>";
+    });
+
+    html += "</div>";
+    area.innerHTML = html;
+
+    area.querySelectorAll("td[data-pair]").forEach(function (cell) {
+      cell.addEventListener("click", function () {
+        var ids = cell.getAttribute("data-pair").split("|");
+        var score = lookup[ids[0] + " " + ids[1]];
+        if (score) inspectScore(score);
+      });
+    });
+  }
+
+  function inspectScore(score) {
+    var rows = Object.keys(WEIGHT_LABELS).map(function (key) {
+      return [WEIGHT_LABELS[key], meterHtml(score.components[key] || 0)];
+    });
+    setInspector(
+      '<div class="inspector__section"><span class="eyebrow">Relationship</span>' +
+      '<h3 style="font-size:13.5px;margin-top:5px">' + esc(titleFor(score.doc_a)) +
+      '</h3><div style="color:var(--ink-muted);font-size:11px;margin:3px 0">↔</div>' +
+      '<h3 style="font-size:13.5px">' + esc(titleFor(score.doc_b)) + "</h3>" +
+      '<div style="margin-top:11px">' + meterHtml(score.composite_score) + "</div></div>" +
+      '<div class="inspector__section"><span class="eyebrow">Dimensions</span>' + kv(rows) + "</div>"
+    );
+  }
+
+  // ------------------------------------------------------------------
+  // Contradictions
+  // ------------------------------------------------------------------
+
+  function markNumbers(text) {
+    // Highlight reported values - the numbers are what the two claims actually
+    // disagree about, so they should be findable at a glance.
+    return esc(text).replace(/(\d{1,3}(?:\.\d+)?\s?%|\b0\.\d{2,4}\b)/g,
+      '<span class="claim__value">$1</span>');
+  }
+
+  function renderContradictions() {
+    var area = $("contradictions-area");
+    var items = state.contradictions;
+    if (state.confirmedOnly) items = items.filter(function (c) { return c.confirmed; });
+
+    if (!items.length) {
+      area.innerHTML = emptyState(
+        '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/>',
+        state.contradictions.length ? "No confirmed contradictions" : "No contradictions detected",
+        state.contradictions.length
+          ? "There are " + state.contradictions.length + " unconfirmed candidates. Clear the filter to review them."
+          : "Run the analysis. Claims are compared across papers that share a dataset or metric; only genuine disagreements are reported."
+      );
+      return;
+    }
+
+    area.innerHTML = items.map(function (item, index) {
+      var confirmed = item.confirmed;
+      var chipIcon = confirmed
+        ? '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/>'
+        : '<circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/>';
+
+      return '<div class="card" data-contradiction="' + index + '">' +
+        '<div class="card__head">' +
+        '<span class="eyebrow">Contradiction ' + (index + 1) + "</span>" +
+        '<div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">' +
+        '<span class="chip chip--' + (confirmed ? "confirmed" : "unconfirmed") + '">' +
+        '<svg class="chip__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+        'stroke-linecap="round" stroke-linejoin="round">' + chipIcon + "</svg>" +
+        (confirmed ? "Confirmed" : "Unconfirmed") + "</span>" +
+        '<span class="chip chip--neutral">confidence ' + fmt(item.confidence, 2) + "</span>" +
+        "</div></div>" +
+
+        '<div class="spread">' +
+        '<div class="claim">' +
+        '<div class="claim__source">' +
+        '<svg class="icon icon--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+        'stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg>' +
+        esc(titleFor(item.doc_a)) + "</div>" +
+        '<div class="claim__text">' + markNumbers(item.claim_a) + "</div>" +
+        (item.evidence[0] ? evidenceBlock(item.evidence[0]) : "") +
+        "</div>" +
+
+        '<div class="spread__divider"><span class="spread__badge">VERSUS</span></div>' +
+
+        '<div class="claim">' +
+        '<div class="claim__source">' +
+        '<svg class="icon icon--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+        'stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg>' +
+        esc(titleFor(item.doc_b)) + "</div>" +
+        '<div class="claim__text">' + markNumbers(item.claim_b) + "</div>" +
+        (item.evidence[1] ? evidenceBlock(item.evidence[1], "b") : "") +
+        "</div></div>" +
+
+        '<div class="signals">' +
+        signal("Stance", item.nli_label) +
+        signal("Stance conf.", fmt(item.nli_confidence, 2)) +
+        signal("Shared dataset", item.dataset_compatible ? "yes" : "no") +
+        signal("Comparable metric", item.metrics_comparable ? "yes" : "no") +
+        signal("Methodology sim.", fmt(item.methodology_similarity, 2)) +
+        "</div>" +
+
+        (item.explanation
+          ? '<div style="padding:11px 16px;border-top:1px solid var(--rule-hairline);font-size:12.5px;color:var(--ink-secondary)">' +
+            esc(item.explanation) + "</div>"
+          : "") +
+        "</div>";
+    }).join("");
+
+    area.querySelectorAll("[data-contradiction]").forEach(function (card) {
+      card.addEventListener("click", function () {
+        inspectContradiction(items[Number(card.getAttribute("data-contradiction"))]);
+      });
+    });
+  }
+
+  function signal(label, value) {
+    return '<div class="signal"><span class="signal__label">' + esc(label) +
+      '</span><span class="signal__value">' + esc(value) + "</span></div>";
+  }
+
+  function inspectContradiction(item) {
+    setInspector(
+      '<div class="inspector__section"><span class="eyebrow">Contradiction</span>' +
+      '<h3 style="font-size:14px;margin-top:5px">' +
+      (item.confirmed ? "Confirmed" : "Unconfirmed") + " disagreement</h3>" +
+      kv([
+        ["Paper A", esc(titleFor(item.doc_a))],
+        ["Paper B", esc(titleFor(item.doc_b))],
+        ["Stance", esc(item.nli_label)],
+        ["Confidence", fmt(item.confidence, 3)],
+        ["Method sim.", fmt(item.methodology_similarity, 3)],
+      ]) + "</div>" +
+      '<div class="inspector__section"><span class="eyebrow">Evidence trail</span>' +
+      item.evidence.map(function (e, i) { return evidenceBlock(e, i === 1 ? "b" : null); }).join("") +
+      "</div>"
+    );
+  }
+
+  // ------------------------------------------------------------------
+  // Research gaps
+  // ------------------------------------------------------------------
+
+  function renderGaps() {
+    var area = $("gaps-area");
+    if (!state.gaps.length) {
+      area.innerHTML = emptyState(
+        '<path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/>',
+        "No research gaps yet",
+        "Run the analysis. Gaps come from three sources: statements the authors make directly, concept pairings absent from the whole corpus, and papers that share a concept but little else."
+      );
+      return;
+    }
+
+    area.innerHTML = state.gaps.map(function (gap, index) {
+      return '<div class="card" data-gap="' + index + '">' +
+        '<div class="card__head">' +
+        '<span class="eyebrow">Gap ' + (index + 1) + "</span>" +
+        '<div style="display:flex;align-items:center;gap:9px;min-width:148px">' +
+        '<span class="eyebrow">Novelty</span>' + meterHtml(gap.novelty_score) + "</div></div>" +
+        '<div class="card__body">' +
+        '<p style="font-family:var(--font-display);font-size:14px;line-height:1.55;margin:0">' +
+        esc(gap.description) + "</p>" +
+        (gap.bridge_entities && gap.bridge_entities.length
+          ? '<div style="margin-top:10px;display:flex;gap:5px;flex-wrap:wrap">' +
+            gap.bridge_entities.map(function (b) {
+              return '<span class="chip chip--bridge">' + esc(b) + "</span>";
+            }).join("") + "</div>"
+          : "") +
+        (gap.supporting_docs && gap.supporting_docs.length
+          ? '<div style="margin-top:9px;font-size:11px;color:var(--ink-muted);font-family:var(--font-mono)">' +
+            gap.supporting_docs.length + " supporting paper" +
+            (gap.supporting_docs.length === 1 ? "" : "s") + "</div>"
+          : "") +
+        (gap.evidence && gap.evidence.length ? evidenceBlock(gap.evidence[0]) : "") +
+        "</div></div>";
+    }).join("");
+
+    area.querySelectorAll("[data-gap]").forEach(function (card) {
+      card.addEventListener("click", function () {
+        inspectGap(state.gaps[Number(card.getAttribute("data-gap"))]);
+      });
+    });
+  }
+
+  function inspectGap(gap) {
+    setInspector(
+      '<div class="inspector__section"><span class="eyebrow">Research gap</span>' +
+      '<p style="font-family:var(--font-display);font-size:13.5px;line-height:1.5;margin:6px 0 10px">' +
+      esc(gap.description) + "</p>" + meterHtml(gap.novelty_score) + "</div>" +
+      (gap.explanation
+        ? '<div class="inspector__section"><span class="eyebrow">Why</span>' +
+          '<p style="font-size:12px;margin:6px 0 0;color:var(--ink-secondary)">' +
+          esc(gap.explanation) + "</p></div>"
+        : "") +
+      '<div class="inspector__section"><span class="eyebrow">Supporting papers</span>' +
+      '<ul style="margin:7px 0 0;padding-left:16px;font-size:12px">' +
+      (gap.supporting_docs || []).map(function (id) {
+        return "<li>" + esc(titleFor(id)) + "</li>";
+      }).join("") + "</ul></div>" +
+      (gap.evidence && gap.evidence.length
+        ? '<div class="inspector__section"><span class="eyebrow">Evidence trail</span>' +
+          gap.evidence.map(function (e) { return evidenceBlock(e); }).join("") + "</div>"
+        : "")
+    );
+  }
+
+  // ------------------------------------------------------------------
+  // Documents table
+  // ------------------------------------------------------------------
+
+  function renderDocuments() {
+    var area = $("corpus-area");
+    if (!state.documents.length) {
+      area.innerHTML = emptyState(
+        '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',
+        "No documents analysed",
+        "Upload PDFs and run the analysis to see how each paper was segmented and classified."
+      );
+      return;
+    }
+
+    area.innerHTML = '<div class="card"><table class="table"><thead><tr>' +
+      "<th>Paper</th><th>Category</th><th>Confidence</th><th>Pages</th>" +
+      "<th>Sections</th><th>Refs</th></tr></thead><tbody>" +
+      state.documents.map(function (doc) {
+        return '<tr data-doc="' + esc(doc.doc_id) + '" style="cursor:pointer">' +
+          "<td><div style=\"font-weight:500\">" + esc(doc.title) + "</div>" +
+          '<div class="mono" style="font-size:10.5px;color:var(--ink-muted)">' + esc(doc.doc_id) + "</div></td>" +
+          '<td><span class="chip chip--neutral">' + esc(doc.category) + "</span>" +
+          (doc.needs_review
+            ? '<div style="font-size:10px;color:var(--status-warning);margin-top:3px">flagged for review</div>'
+            : "") + "</td>" +
+          '<td class="mono">' + fmt(doc.category_confidence, 2) + "</td>" +
+          '<td class="mono">' + esc(doc.total_pages) + "</td>" +
+          '<td style="font-size:11px;color:var(--ink-secondary)">' + esc(doc.segments.join(", ")) + "</td>" +
+          '<td class="mono">' + esc(doc.reference_count) + "</td></tr>";
+      }).join("") + "</tbody></table></div>";
+
+    area.querySelectorAll("tr[data-doc]").forEach(function (row) {
+      row.addEventListener("click", function () {
+        var doc = state.documents.find(function (d) { return d.doc_id === row.getAttribute("data-doc"); });
+        if (doc) inspectDocument(doc);
+      });
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Weights modal
+  // ------------------------------------------------------------------
+
+  function openWeights() {
+    state.draftWeights = Object.assign({}, state.weights);
+    renderWeightSliders();
+    $("modal-weights").setAttribute("data-open", "true");
+  }
+
+  function closeWeights() {
+    $("modal-weights").setAttribute("data-open", "false");
+  }
+
+  function renderWeightSliders() {
+    var host = $("weights-sliders");
+    host.innerHTML = Object.keys(WEIGHT_LABELS).map(function (key) {
+      return '<div class="slider-row"><div class="slider-row__head">' +
+        '<span class="slider-row__name">' + WEIGHT_LABELS[key] + "</span>" +
+        '<span class="slider-row__value" id="wv-' + key + '">' +
+        fmt(state.draftWeights[key], 2) + "</span></div>" +
+        '<input type="range" min="0" max="1" step="0.05" value="' +
+        state.draftWeights[key] + '" data-weight="' + key + '" /></div>';
+    }).join("");
+
+    host.querySelectorAll("input[data-weight]").forEach(function (input) {
+      input.addEventListener("input", function () {
+        var key = input.getAttribute("data-weight");
+        state.draftWeights[key] = parseFloat(input.value);
+        $("wv-" + key).textContent = fmt(state.draftWeights[key], 2);
+        updateWeightSum();
+      });
+    });
+    updateWeightSum();
+  }
+
+  function weightSum() {
+    return Object.keys(WEIGHT_LABELS).reduce(function (total, key) {
+      return total + (state.draftWeights[key] || 0);
+    }, 0);
+  }
+
+  function updateWeightSum() {
+    var sum = weightSum();
+    var valid = Math.abs(sum - 1) < 1e-4;
+    var readout = $("weights-sum");
+    readout.textContent = "Sum " + fmt(sum, 2) + (valid ? "" : " — must be 1.00");
+    readout.setAttribute("data-valid", valid ? "true" : "false");
+    $("btn-save-weights").disabled = !valid;
+  }
+
+  // ------------------------------------------------------------------
+  // Actions
+  // ------------------------------------------------------------------
+
+  async function runPipeline() {
+    if (state.running) return;
+    setRunning(true);
+    $("status-fill").style.width = "2%";
+    $("status-stage").textContent = "starting";
+    $("status-message").textContent = "Submitting run…";
+
+    try {
+      await api("/api/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          extraction_backend: $("sel-backend").value,
+          use_nli: $("chk-nli").checked,
+          skip_explanation: false,
+        }),
+      });
+    } catch (err) {
+      setRunning(false);
+      $("status-stage").textContent = "idle";
+      $("status-message").textContent = "Ready.";
+      $("status-fill").style.width = "0";
+      toast(err.message, "error");
+    }
+  }
+
+  async function uploadFiles(files) {
+    var pdfs = Array.from(files).filter(function (f) { return /\.pdf$/i.test(f.name); });
+    if (!pdfs.length) {
+      toast("Only PDF files can be added to the corpus.", "error");
+      return;
+    }
+
+    var uploaded = 0;
+    for (var i = 0; i < pdfs.length; i++) {
+      var form = new FormData();
+      form.append("file", pdfs[i]);
+      try {
+        await api("/api/upload", { method: "POST", body: form });
+        uploaded++;
+      } catch (err) {
+        toast(pdfs[i].name + ": " + err.message, "error");
+      }
+    }
+    if (uploaded) {
+      toast("Added " + uploaded + " paper" + (uploaded === 1 ? "" : "s") + " to the corpus.", "success");
+      refreshStatus();
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Wiring
+  // ------------------------------------------------------------------
+
+  function initTabs() {
+    var tabs = Array.from(document.querySelectorAll(".tab"));
+    tabs.forEach(function (tab) {
+      tab.addEventListener("click", function () {
+        tabs.forEach(function (other) {
+          var active = other === tab;
+          other.setAttribute("aria-selected", active ? "true" : "false");
+          $(other.getAttribute("data-panel")).setAttribute("data-active", active ? "true" : "false");
+        });
+        // Cytoscape cannot size itself while its container is display:none.
+        if (tab.getAttribute("data-panel") === "panel-graph" && state.cy) {
+          setTimeout(function () { state.cy.resize(); state.cy.fit(undefined, 36); }, 30);
+        }
+      });
+    });
+  }
+
+  function init() {
+    initTheme();
+    initTabs();
+    clearInspector();
+
+    $("btn-theme").addEventListener("click", function () {
+      var dark = document.documentElement.getAttribute("data-theme") === "dark" ||
+        (!document.documentElement.hasAttribute("data-theme") &&
+          window.matchMedia("(prefers-color-scheme: dark)").matches);
+      applyTheme(dark ? "light" : "dark");
+    });
+
+    $("btn-run").addEventListener("click", runPipeline);
+    $("btn-export").addEventListener("click", function () {
+      window.open(API_BASE + "/api/report?fmt=md", "_blank");
+    });
+
+    $("btn-weights").addEventListener("click", openWeights);
+    $("btn-close-weights").addEventListener("click", closeWeights);
+    $("modal-weights").addEventListener("click", function (evt) {
+      if (evt.target === $("modal-weights")) closeWeights();
+    });
+    $("btn-reset-weights").addEventListener("click", function () {
+      state.draftWeights = { objective: 0.25, methodology: 0.25, dataset: 0.2, results_metrics: 0.2, citation: 0.1 };
+      renderWeightSliders();
+    });
+    $("btn-save-weights").addEventListener("click", async function () {
+      try {
+        var response = await api("/api/config/weights", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(state.draftWeights),
+        });
+        state.weights = response.weights;
+        closeWeights();
+        toast(response.message, "success");
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    });
+
+    document.addEventListener("keydown", function (evt) {
+      if (evt.key === "Escape") closeWeights();
+    });
+
+    var dropzone = $("dropzone");
+    var fileInput = $("file-input");
+    dropzone.addEventListener("click", function () { fileInput.click(); });
+    dropzone.addEventListener("keydown", function (evt) {
+      if (evt.key === "Enter" || evt.key === " ") { evt.preventDefault(); fileInput.click(); }
+    });
+    fileInput.addEventListener("change", function () {
+      if (fileInput.files.length) uploadFiles(fileInput.files);
+      fileInput.value = "";
+    });
+    ["dragenter", "dragover"].forEach(function (type) {
+      dropzone.addEventListener(type, function (evt) {
+        evt.preventDefault();
+        dropzone.classList.add("is-over");
+      });
+    });
+    ["dragleave", "drop"].forEach(function (type) {
+      dropzone.addEventListener(type, function (evt) {
+        evt.preventDefault();
+        dropzone.classList.remove("is-over");
+      });
+    });
+    dropzone.addEventListener("drop", function (evt) {
+      if (evt.dataTransfer && evt.dataTransfer.files.length) uploadFiles(evt.dataTransfer.files);
+    });
+
+    $("graph-search").addEventListener("input", applyGraphFilter);
+    $("graph-filter").addEventListener("change", applyGraphFilter);
+    $("btn-fit").addEventListener("click", function () {
+      if (state.cy) state.cy.fit(undefined, 36);
+    });
+    $("btn-relayout").addEventListener("click", function () {
+      if (state.cy) runLayout(state.cy);
+    });
+
+    $("chk-confirmed-only").addEventListener("change", function (evt) {
+      state.confirmedOnly = evt.target.checked;
+      renderContradictions();
+    });
+
+    $("btn-clear-inspector").addEventListener("click", function () {
+      clearInspector();
+      if (state.cy) state.cy.elements().removeClass("dimmed highlight");
+    });
+
+    connectSocket();
+    refreshAll();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();
