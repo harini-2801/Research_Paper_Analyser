@@ -8,14 +8,44 @@
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700;9..144,800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 
 <link rel="stylesheet" href="/static/css/rpra.css" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#128218;</text></svg>">
 </head>
 <body>
 
-<div class="aurora" aria-hidden="true"><span></span><span></span><span></span></div>
+<!-- The backdrop is the subject matter: papers as nodes, citations as edges. -->
+<div class="backdrop" aria-hidden="true">
+  <svg class="backdrop__graph" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice">
+    <g class="edges">
+      <path class="edge" d="M140 120 L340 210 M340 210 L250 400 M250 400 L140 120"/>
+      <path class="edge" d="M340 210 L560 150 M560 150 L700 300 M700 300 L560 420"/>
+      <path class="edge" d="M560 420 L340 210 M560 420 L250 400 M700 300 L900 220"/>
+      <path class="edge" d="M900 220 L1060 350 M1060 350 L940 520 M940 520 L700 300"/>
+      <path class="edge" d="M250 400 L420 610 M420 610 L640 680 M640 680 L940 520"/>
+      <path class="edge" d="M420 610 L180 700 M900 220 L1120 120 M640 680 L560 420"/>
+      <path class="edge" d="M1060 350 L1140 600 M180 700 L60 520 M60 520 L250 400"/>
+    </g>
+    <g class="nodes">
+      <circle class="node node--gold node--pulse" cx="340" cy="210" r="4.5"/>
+      <circle class="node" cx="140" cy="120" r="3"/>
+      <circle class="node" cx="250" cy="400" r="3.6"/>
+      <circle class="node node--gold" cx="560" cy="150" r="3"/>
+      <circle class="node node--pulse" cx="700" cy="300" r="4.5" style="animation-delay:1.4s"/>
+      <circle class="node" cx="560" cy="420" r="3.4"/>
+      <circle class="node node--gold node--pulse" cx="900" cy="220" r="4" style="animation-delay:2.8s"/>
+      <circle class="node" cx="1060" cy="350" r="3"/>
+      <circle class="node" cx="940" cy="520" r="3.4"/>
+      <circle class="node" cx="420" cy="610" r="3"/>
+      <circle class="node node--gold" cx="640" cy="680" r="3.2"/>
+      <circle class="node" cx="180" cy="700" r="2.6"/>
+      <circle class="node" cx="1120" cy="120" r="2.6"/>
+      <circle class="node" cx="1140" cy="600" r="2.6"/>
+      <circle class="node" cx="60" cy="520" r="2.6"/>
+    </g>
+  </svg>
+</div>
 
 <div class="app">
 
@@ -23,10 +53,10 @@
   <header class="masthead">
     <div class="masthead__brand">
       <svg class="mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-        <circle cx="16" cy="6.5" r="3.6" fill="currentColor"/>
-        <circle cx="6" cy="24" r="3.6" fill="currentColor" opacity="0.55"/>
-        <circle cx="26" cy="24" r="3.6" fill="currentColor" opacity="0.55"/>
-        <path d="M16 10.1 6 20.4M16 10.1 26 20.4M9.6 24h12.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        <path class="mark__edge" d="M16 7 L7 24 M16 7 L25 24 M9.5 24 h13"/>
+        <circle class="mark__node mark__node--a" cx="16" cy="7" r="3.4"/>
+        <circle class="mark__node" cx="7" cy="24" r="2.8"/>
+        <circle class="mark__node" cx="25" cy="24" r="2.8"/>
       </svg>
       <div class="masthead__titles">
         <h1 class="masthead__title">Research Paper Relationship Analyzer</h1>
@@ -118,27 +148,27 @@
       <!-- Figures: plain numbers, no chart - a single value needs no plot -->
       <section class="figures" aria-label="Corpus summary">
         <div class="figure figure--papers">
-          <span class="figure__label">Papers</span>
+          <span class="figure__head"><svg class="figure__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><span class="figure__label">Papers</span></span>
           <span class="figure__value num" id="fig-papers">0</span>
           <span class="figure__note" id="fig-papers-note">none ingested</span>
         </div>
         <div class="figure figure--graph">
-          <span class="figure__label">Graph</span>
+          <span class="figure__head"><svg class="figure__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="2.4"/><circle cx="5" cy="19" r="2.4"/><circle cx="19" cy="19" r="2.4"/><path d="M12 7.4 6.2 16.7M12 7.4l5.8 9.3M7.4 19h9.2"/></svg><span class="figure__label">Graph</span></span>
           <span class="figure__value num" id="fig-nodes">0</span>
           <span class="figure__note" id="fig-nodes-note">0 edges</span>
         </div>
         <div class="figure figure--bridges">
-          <span class="figure__label">Bridge concepts</span>
+          <span class="figure__head"><svg class="figure__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18V9a8 8 0 0 1 16 0v9M4 14h16M9 18v-4M15 18v-4"/></svg><span class="figure__label">Bridge concepts</span></span>
           <span class="figure__value num" id="fig-bridges">0</span>
           <span class="figure__note" id="fig-bridges-note">shared across papers</span>
         </div>
         <div class="figure figure--contradictions">
-          <span class="figure__label">Contradictions</span>
+          <span class="figure__head"><svg class="figure__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/></svg><span class="figure__label">Contradictions</span></span>
           <span class="figure__value num" id="fig-contradictions">0</span>
           <span class="figure__note" id="fig-contradictions-note">0 confirmed</span>
         </div>
         <div class="figure figure--gaps">
-          <span class="figure__label">Research gaps</span>
+          <span class="figure__head"><svg class="figure__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg><span class="figure__label">Research gaps</span></span>
           <span class="figure__value num" id="fig-gaps">0</span>
           <span class="figure__note" id="fig-gaps-note">novelty ranked</span>
         </div>
@@ -287,6 +317,63 @@
       <div style="display:flex;gap:8px">
         <button class="btn btn--ghost" id="btn-reset-weights">Reset</button>
         <button class="btn btn--primary" id="btn-save-weights">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== CONNECT BACKEND MODAL ==================== -->
+<div class="modal" id="modal-backend" role="dialog" aria-modal="true" aria-labelledby="backend-title">
+  <div class="modal__panel modal__panel--wide">
+    <div class="modal__head">
+      <h2 class="modal__title" id="backend-title">Connect an analysis backend</h2>
+      <button class="btn btn--icon" id="btn-close-backend" aria-label="Close">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <div class="modal__body">
+      <p class="hint" style="margin-top:0;margin-bottom:14px;font-size:12.5px">
+        This page is the interface only. Browsing a saved analysis works without anything else,
+        but uploading papers and running the pipeline need the Python API running somewhere.
+      </p>
+
+      <ol class="steps">
+        <li>
+          <strong>Run it locally</strong> &mdash; clone the repository and run
+          <code>pip install -e . &amp;&amp; rpra serve</code>. It opens on
+          <code>http://localhost:8000</code> and serves this interface itself, so nothing
+          needs connecting.
+        </li>
+        <li>
+          <strong>Or deploy it</strong> &mdash; the repository has a <code>render.yaml</code>.
+          Create a Render web service from the repo and it will build and start the API.
+        </li>
+        <li>
+          <strong>Then paste the URL below.</strong> The page reloads pointed at that API.
+        </li>
+      </ol>
+
+      <div class="field" style="margin-top:4px">
+        <label class="field__label" for="input-backend">Backend URL</label>
+        <input class="input" id="input-backend" type="url" spellcheck="false"
+               placeholder="https://your-service.onrender.com" />
+      </div>
+
+      <div class="note">
+        <strong>An OpenAI key is optional.</strong> The default extraction backend is
+        heuristic: it runs offline with no key and no account. A key only switches on
+        LLM extraction and explanation generation, and it is set on the
+        <em>server</em> as the <code>OPENAI_API_KEY</code> environment variable &mdash;
+        never entered into this page.
+      </div>
+    </div>
+
+    <div class="modal__foot">
+      <button class="btn btn--ghost" id="btn-backend-same-origin">Use this origin</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn--ghost" id="btn-cancel-backend">Cancel</button>
+        <button class="btn btn--primary" id="btn-save-backend">Connect</button>
       </div>
     </div>
   </div>

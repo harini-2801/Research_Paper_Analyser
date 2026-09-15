@@ -1360,21 +1360,49 @@
 
     $("btn-run").addEventListener("click", runPipeline);
 
-    $("btn-connect-api").addEventListener("click", function () {
-      var current = API_BASE || "";
-      var entered = window.prompt(
-        "Backend URL (for example https://your-api.onrender.com). " +
-        "Leave blank to use this same origin.",
-        current
-      );
-      if (entered === null) return;
-      var url = new URL(window.location.href);
-      if (entered.trim()) {
-        url.searchParams.set("api", entered.trim().replace(/\/$/, ""));
+    function openBackendModal() {
+      $("input-backend").value = API_BASE || "";
+      $("modal-backend").setAttribute("data-open", "true");
+      setTimeout(function () { $("input-backend").focus(); }, 60);
+    }
+
+    function closeBackendModal() {
+      $("modal-backend").setAttribute("data-open", "false");
+    }
+
+    function applyBackend(url) {
+      var target = new URL(window.location.href);
+      if (url) {
+        target.searchParams.set("api", url.replace(/\/$/, ""));
       } else {
-        url.searchParams.delete("api");
+        target.searchParams.delete("api");
       }
-      window.location.href = url.toString();
+      window.location.href = target.toString();
+    }
+
+    $("btn-connect-api").addEventListener("click", openBackendModal);
+    $("btn-close-backend").addEventListener("click", closeBackendModal);
+    $("btn-cancel-backend").addEventListener("click", closeBackendModal);
+    $("modal-backend").addEventListener("click", function (evt) {
+      if (evt.target === $("modal-backend")) closeBackendModal();
+    });
+    $("btn-backend-same-origin").addEventListener("click", function () {
+      applyBackend("");
+    });
+    $("btn-save-backend").addEventListener("click", function () {
+      var entered = $("input-backend").value.trim();
+      if (!entered) {
+        toast("Enter a backend URL, or choose “Use this origin”.", "error");
+        return;
+      }
+      if (!/^https?:\/\//i.test(entered)) {
+        toast("The URL needs to start with http:// or https://", "error");
+        return;
+      }
+      applyBackend(entered);
+    });
+    $("input-backend").addEventListener("keydown", function (evt) {
+      if (evt.key === "Enter") $("btn-save-backend").click();
     });
     $("btn-export").addEventListener("click", function () {
       window.open(API_BASE + "/api/report?fmt=md", "_blank");
@@ -1405,7 +1433,9 @@
     });
 
     document.addEventListener("keydown", function (evt) {
-      if (evt.key === "Escape") closeWeights();
+      if (evt.key !== "Escape") return;
+      closeWeights();
+      $("modal-backend").setAttribute("data-open", "false");
     });
 
     var dropzone = $("dropzone");
