@@ -1,19 +1,28 @@
+# Core runtime dependencies.
+#
+# This file exists because some hosts (Render, Railway, Heroku) auto-detect it
+# and run `pip install -r requirements.txt` by default. It therefore has to
+# match the core dependency set in pyproject.toml - if it lists torch, a host
+# using the default build command pulls ~2.5 GB and the deploy fails on a small
+# instance, whatever the documented build command says.
+#
+# Optional extras are NOT listed here. Install them explicitly:
+#   pip install -e ".[ml]"    transformer embeddings + NLI model (~2.5 GB)
+#   pip install -e ".[llm]"   OpenAI extraction and explanations
+#   pip install -e ".[dev]"   test suite and linter
+
 -e .
+
 fastapi>=0.110.0
 uvicorn[standard]>=0.29.0
 websockets>=12.0
 python-multipart>=0.0.9
 pydantic>=2.7.0
 PyMuPDF>=1.23.0
-sentence-transformers>=3.0.0
-transformers>=4.41.0
-torch>=2.6.0
 networkx>=3.3
-openai>=1.30.0
+numpy>=1.26.0
+pyyaml>=6.0
 python-dotenv>=1.0.0
 rich>=13.7.0
 typer>=0.12.0
 tqdm>=4.66.0
-numpy>=1.26.0
-scipy>=1.13.0
-pyyaml>=6.0
