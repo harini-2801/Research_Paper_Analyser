@@ -294,10 +294,41 @@ artefact rather than a system error: MoCo uses ResNet as its backbone and
 reports ImageNet numbers, so the two really are related — the cluster labels
 simply put them in different groups.
 
-### Findings
+### Contradiction precision
 
-10 contradictions and 60 research gaps. Neither has ground truth, so both are
-reported rather than scored.
+Successive gates, each added in response to an inspected false positive:
+
+| Stage | Findings on the 30-paper corpus |
+|---|---|
+| Shared dataset + metric name only | 1454 (1112 "confirmed") |
+| + same subject, per-pair cap | 79 |
+| + must assert a result; shared metric in both sentences | 10 |
+| + measurement modelling (below) | **0** |
+
+Every one of the 10 survivors was inspected and every one was a false positive.
+The final gate models what each number measures rather than matching words:
+a delta is not a level, a figure quoted from another paper is not the author's
+own, exact-match is not F1, top-1 is not top-5, and linear-probe is not
+fine-tuned. `claims.py` holds that logic and `tests/test_claims.py` pins each
+rule to the sentence that motivated it.
+
+Zero is the correct answer for this corpus. These are thirty landmark papers
+proposing different methods; they rarely re-run each other's experiments, which
+is what a numeric contradiction requires. Recall is demonstrated separately on
+the synthetic corpus, where contradictions are planted by construction: both
+planted document pairs are still recovered.
+
+Two bugs surfaced during this work and were fixed:
+
+- PDF extraction splits decimal points with spaces, so `82 . 9%` parsed as `9%`.
+  Every affected figure was wrong by an order of magnitude.
+- The model gate matched whole terms only, so `ViT-B/16` did not match `ViT` and
+  the gate could not fire. Models now match by family; datasets stay strict,
+  because CIFAR-10 and CIFAR-100 genuinely differ.
+
+### Research gaps
+
+60 gaps. No ground truth, so reported rather than scored.
 
 ---
 

@@ -1001,12 +1001,30 @@
     if (state.confirmedOnly) items = items.filter(function (c) { return c.confirmed; });
 
     if (!items.length) {
+      var hasRun = state.status && state.status.has_results;
+      var title, body;
+
+      if (state.contradictions.length) {
+        title = "No confirmed contradictions";
+        body = "There are " + state.contradictions.length +
+          " unconfirmed candidates. Clear the filter to review them.";
+      } else if (hasRun) {
+        // Zero is a real result, not a failure. Say so, or the panel reads as
+        // broken when the corpus genuinely contains no numeric disagreement.
+        title = "No contradictions in this corpus";
+        body = "Every candidate was rejected. A pair is only reported when both " +
+          "papers state a measured result for the same metric on the same dataset, " +
+          "under the same evaluation regime, and the reported values differ " +
+          "materially. Papers that study different methods rarely meet that bar.";
+      } else {
+        title = "No contradictions detected";
+        body = "Run the analysis. Claims are compared across papers that share a " +
+          "dataset and a metric; only genuine disagreements are reported.";
+      }
+
       area.innerHTML = emptyState(
         '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/>',
-        state.contradictions.length ? "No confirmed contradictions" : "No contradictions detected",
-        state.contradictions.length
-          ? "There are " + state.contradictions.length + " unconfirmed candidates. Clear the filter to review them."
-          : "Run the analysis. Claims are compared across papers that share a dataset or metric; only genuine disagreements are reported."
+        title, body
       );
       return;
     }
