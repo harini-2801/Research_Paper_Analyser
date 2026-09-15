@@ -8,7 +8,6 @@ Supports incremental updates and provides a query interface.
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -22,7 +21,6 @@ from rpra.models import (
     Relation,
     RelationshipScore,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -50,6 +48,11 @@ class KnowledgeGraph:
 
     def __init__(self) -> None:
         self._graph: nx.MultiDiGraph = nx.MultiDiGraph()
+
+    @property
+    def graph(self) -> nx.MultiDiGraph:
+        """The underlying NetworkX graph, for callers that need direct access."""
+        return self._graph
 
     # ------------------------------------------------------------------
     # Population
@@ -145,7 +148,7 @@ class KnowledgeGraph:
         edges = self._graph.get_edge_data(a, b) or {}
         return [dict(v) for v in edges.values()]
 
-    def subgraph_for_document(self, doc_id: str, depth: int = 2) -> "KnowledgeGraph":
+    def subgraph_for_document(self, doc_id: str, depth: int = 2) -> KnowledgeGraph:
         """Return a KG containing *doc_id* and all nodes within *depth* hops."""
         nodes = nx.ego_graph(self._graph, doc_id, radius=depth, undirected=True).nodes()
         sub = KnowledgeGraph()
@@ -153,13 +156,25 @@ class KnowledgeGraph:
         return sub
 
     def documents_sharing_bridge_entity(self, entity_text: str) -> list[str]:
-        bridge_id = f"bridge::{entity_text.lower()}"
-        if not self._graph.has_node(bridge_id):
-            return []
-        return [
-            pred for pred in self._graph.predecessors(bridge_id)
-            if self._graph.nodes[pred].get("node_type") == "document"
-        ]
+        """
+        Documents connected to a bridge entity.
+
+        Bridge nodes are keyed by the text they were added with, which the
+        extractor normalises to lowercase but a caller may not. Both spellings
+        are tried so a correctly-cased lookup does not silently return nothing.
+        """
+        target = f"bridge::{entity_text}".lower()
+        for node_id, attrs in self._graph.nodes(data=True):
+            if attrs.get("node_type") != "bridge_entity":
+                continue
+            if str(node_id).lower() != target:
+                continue
+            return [
+                pred
+                for pred in self._graph.predecessors(node_id)
+                if self._graph.nodes[pred].get("node_type") == "document"
+            ]
+        return []
 
     def all_document_ids(self) -> list[str]:
         return [
@@ -196,7 +211,7 @@ class KnowledgeGraph:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "KnowledgeGraph":
+    def from_dict(cls, data: dict) -> KnowledgeGraph:
         """Deserialise from a dict produced by :meth:`to_dict`."""
         kg = cls()
         for node in data.get("nodes", []):
@@ -219,7 +234,7 @@ class KnowledgeGraph:
             json.dump(self.to_dict(), fh, indent=2, default=str)
 
     @classmethod
-    def load(cls, path: str | Path) -> "KnowledgeGraph":
+    def load(cls, path: str | Path) -> KnowledgeGraph:
         """Load from a JSON file saved by :meth:`save`."""
         path = Path(path)
         with path.open("r", encoding="utf-8") as fh:

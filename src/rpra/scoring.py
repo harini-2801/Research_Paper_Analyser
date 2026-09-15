@@ -11,7 +11,7 @@ from __future__ import annotations
 import itertools
 import logging
 import time
-from typing import Callable
+from collections.abc import Callable
 
 import numpy as np
 
@@ -19,8 +19,8 @@ from rpra.models import (
     Document,
     Entity,
     EntityType,
-    ProgressEvent,
     PipelineStageStatus,
+    ProgressEvent,
     RelationshipScore,
 )
 
@@ -115,18 +115,22 @@ def _results_metrics_similarity(
 
 def _citation_overlap(doc_a: Document, doc_b: Document) -> float:
     """
-    Simple overlap based on reference-section entity text shared between docs.
-    In a real system this would parse reference lists properly.
+    Bibliographic coupling: how much of the two papers' reference lists overlap.
+
+    Reads the citation keys written by :mod:`rpra.citations` during ingestion.
+    Two papers citing the same prior work are related even when they share no
+    vocabulary, which is exactly the signal the other four dimensions miss.
+
+    Direct citation between the two documents is treated as maximal overlap:
+    if A cites B, they are related regardless of bibliography similarity.
     """
-    cites_a = {
-        e.text.lower().strip()
-        for seg in doc_a.segments
-        if seg.section_type == "references"
-        for e in []  # entities keyed per-segment not available here; use doc metadata
-    }
-    # Fallback: look at the metadata if references were parsed separately
-    cites_a = set(doc_a.metadata.get("cited_titles", []))
-    cites_b = set(doc_b.metadata.get("cited_titles", []))
+    if doc_b.id in set(doc_a.metadata.get("cites_doc_ids", [])):
+        return 1.0
+    if doc_a.id in set(doc_b.metadata.get("cites_doc_ids", [])):
+        return 1.0
+
+    cites_a = {c.lower().strip() for c in doc_a.metadata.get("cited_titles", []) if c}
+    cites_b = {c.lower().strip() for c in doc_b.metadata.get("cited_titles", []) if c}
     return _jaccard_similarity(cites_a, cites_b)
 
 
@@ -211,7 +215,7 @@ def score_corpus(
             ents_b = entity_index.get(doc_b.id, [])
             score = compute_relationship_score(doc_a, doc_b, ents_a, ents_b, weights)
             scores.append(score)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("Scoring failed for (%s, %s): %s", doc_a.id, doc_b.id, exc)
 
         if (i + 1) % 50 == 0 or (i + 1) == total:

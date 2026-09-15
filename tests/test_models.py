@@ -1,21 +1,15 @@
 """Tests for core domain models and round-trip serialisation (Requirement 18)."""
 
-import json
-import pytest
-from uuid import UUID
 
+from rpra.knowledge_graph import KnowledgeGraph, build_knowledge_graph
 from rpra.models import (
     Document,
-    DocumentCategory,
     Entity,
     EntityType,
     EvidenceTrail,
     Relation,
     RelationType,
-    Segment,
 )
-from rpra.knowledge_graph import KnowledgeGraph, build_knowledge_graph
-
 
 # ---------------------------------------------------------------------------
 # Entity round-trip
@@ -104,11 +98,13 @@ def test_kg_query_document_exists():
 
 def test_kg_bridge_entity():
     kg = _make_minimal_kg()
-    docs = kg.documents_sharing_bridge_entity("bert fine-tuning")
-    # bridge entity was added as "BERT fine-tuning" — key is case-sensitive in bridge_id
-    # just confirm the bridge node exists
     bridge_node = kg.get_node("bridge::BERT fine-tuning")
     assert bridge_node is not None
+
+    # The lookup must work whichever casing the caller uses.
+    expected = ["paper_a", "paper_b"]
+    assert sorted(kg.documents_sharing_bridge_entity("BERT fine-tuning")) == expected
+    assert sorted(kg.documents_sharing_bridge_entity("bert fine-tuning")) == expected
 
 
 def test_kg_all_document_ids():

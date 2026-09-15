@@ -1,21 +1,37 @@
 """
 Contradiction Detection (Requirement 7).
 
-Uses NLI (Natural Language Inference) combined with contextual signals
-(dataset compatibility, metric comparability, methodology similarity)
-to identify genuine scientific contradictions.
+Combines NLI stance classification with contextual signals - dataset
+compatibility, metric comparability, methodology similarity - to separate
+genuine scientific disagreement from claims that merely sound different.
 
-Key rule (Req 7.4): A contradiction is CONFIRMED only when:
-  NLI label == "contradiction"
-  AND (datasets are compatible OR metrics are directly comparable)
-  AND methodology_similarity >= threshold (default 0.3)
+Confirmation rule (Req 7.4):
+
+    NLI label == contradiction
+    AND nli_confidence >= threshold
+    AND (datasets compatible OR metrics comparable)
+    AND methodology_similarity >= threshold
+
+Two detectors run and their results are merged:
+
+`nli`
+    A cross-encoder NLI model scores claim pairs. Requires the model to load.
+
+`numeric`
+    A domain rule: two papers reporting materially different values for the
+    same metric on the same dataset are contradicting each other, whatever the
+    surface wording. This runs unconditionally - it is cheap, needs no model,
+    and catches the most consequential class of disagreement in empirical work.
+    It is also the only detector available when the NLI model cannot be loaded.
 """
 
 from __future__ import annotations
 
+import itertools
 import logging
+import re
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from rpra.models import (
     Contradiction,
@@ -25,12 +41,30 @@ from rpra.models import (
     EntityType,
     EvidenceTrail,
     NLILabel,
-    ProgressEvent,
     PipelineStageStatus,
+    ProgressEvent,
     RelationshipScore,
 )
 
 logger = logging.getLogger(__name__)
+
+# Bound the work: claim pairs grow quadratically with corpus size.
+_MAX_CLAIMS_PER_DOC = 8
+_MAX_PAIRS_PER_DOC_PAIR = 24
+_CANDIDATE_SCORE_THRESHOLD = 0.35
+
+# Two reported values are treated as disagreeing past this relative difference.
+_NUMERIC_DISAGREEMENT_RATIO = 0.05
+# Confidence floor for a numeric disagreement that clears the threshold, and the
+# relative gap at which confidence saturates.
+_NUMERIC_BASE_CONFIDENCE = 0.62
+_NUMERIC_SATURATION_RATIO = 0.30
+
+_VALUE_RE = re.compile(
+    r"(\d{1,3}(?:\.\d+)?)\s*%|"          # 92.4%
+    r"\b(0\.\d{2,4})\b|"                  # 0.923
+    r"\b(\d{1,3}\.\d{1,2})\b"             # 92.4
+)
 
 
 # ---------------------------------------------------------------------------
@@ -39,13 +73,20 @@ logger = logging.getLogger(__name__)
 
 
 def _extract_claims(entities: list[Entity]) -> list[Entity]:
-    """Return entities that carry testable claims (results + methodology)."""
-    claim_types = {
-        EntityType.QUANTITATIVE_RESULT,
-        EntityType.METHODOLOGY,
-        EntityType.OBJECTIVE,
+    """
+    Return entities carrying testable claims, most comparable first.
+
+    Quantitative results lead because they are the claims a contradiction can
+    actually be adjudicated on; objectives and methodologies follow.
+    """
+    priority = {
+        EntityType.QUANTITATIVE_RESULT: 0,
+        EntityType.METHODOLOGY: 1,
+        EntityType.OBJECTIVE: 2,
     }
-    return [e for e in entities if e.entity_type in claim_types]
+    claims = [e for e in entities if e.entity_type in priority and e.sentence_span.strip()]
+    claims.sort(key=lambda e: (priority[e.entity_type], -len(e.sentence_span)))
+    return claims[:_MAX_CLAIMS_PER_DOC]
 
 
 def _datasets_compatible(entities_a: list[Entity], entities_b: list[Entity]) -> bool:
@@ -56,10 +97,132 @@ def _datasets_compatible(entities_a: list[Entity], entities_b: list[Entity]) -> 
 
 
 def _metrics_comparable(entities_a: list[Entity], entities_b: list[Entity]) -> bool:
-    """True when both documents use at least one common evaluation metric name."""
-    met_a = {e.text.lower().strip() for e in entities_a if e.entity_type == EntityType.EVALUATION_METRIC}
-    met_b = {e.text.lower().strip() for e in entities_b if e.entity_type == EntityType.EVALUATION_METRIC}
+    """True when both documents use at least one common evaluation metric."""
+    met_a = {
+        e.text.lower().strip()
+        for e in entities_a
+        if e.entity_type == EntityType.EVALUATION_METRIC
+    }
+    met_b = {
+        e.text.lower().strip()
+        for e in entities_b
+        if e.entity_type == EntityType.EVALUATION_METRIC
+    }
     return bool(met_a & met_b)
+
+
+def _shared_terms(entities_a: list[Entity], entities_b: list[Entity]) -> set[str]:
+    """Dataset and metric names present in both documents."""
+    comparable = {EntityType.DATASET, EntityType.EVALUATION_METRIC}
+    a = {e.text.lower().strip() for e in entities_a if e.entity_type in comparable}
+    b = {e.text.lower().strip() for e in entities_b if e.entity_type in comparable}
+    return a & b
+
+
+def _dataset_names(entities: list[Entity]) -> set[str]:
+    return {
+        e.text.lower().strip()
+        for e in entities
+        if e.entity_type == EntityType.DATASET
+    }
+
+
+# ---------------------------------------------------------------------------
+# Numeric claim comparison
+# ---------------------------------------------------------------------------
+
+
+def parse_reported_values(sentence: str) -> list[float]:
+    """
+    Pull reported scores out of a sentence, normalised to the 0-1 range.
+
+    Percentages are divided by 100 so that "92.4%" and "0.924" compare equal.
+    Values that cannot be a score once normalised are dropped.
+    """
+    values: list[float] = []
+    for match in _VALUE_RE.finditer(sentence):
+        percent, decimal, bare = match.groups()
+        if percent is not None:
+            value = float(percent) / 100.0
+        elif decimal is not None:
+            value = float(decimal)
+        else:
+            value = float(bare)
+            if value > 1.0:
+                value /= 100.0
+        if 0.0 < value <= 1.0:
+            values.append(round(value, 4))
+    return values
+
+
+def _mentions(text: str, term: str) -> bool:
+    """
+    Whole-term containment test.
+
+    Plain substring matching is wrong here: `CIFAR-10` is a substring of
+    `CIFAR-100`, so a result on one dataset would be compared against a result
+    on the other and reported as a contradiction. The lookarounds reject a match
+    that is only part of a longer identifier.
+    """
+    return re.search(rf"(?<![\w-]){re.escape(term)}(?![\w-])", text, re.IGNORECASE) is not None
+
+
+def _numeric_disagreement(
+    claim_a: Entity,
+    claim_b: Entity,
+    shared: set[str],
+    dataset_terms: set[str],
+) -> float | None:
+    """
+    Score a numeric disagreement between two result claims.
+
+    Both claims must mention the same dataset or metric, and both must report a
+    value. Returns a confidence in [0, 1] scaled by the size of the gap, or
+    None when the claims are not comparable or do not disagree.
+    """
+    if not shared:
+        return None
+
+    text_a = claim_a.sentence_span
+    text_b = claim_b.sentence_span
+
+    common = {
+        term for term in shared if _mentions(text_a, term) and _mentions(text_b, term)
+    }
+    if not common:
+        return None
+
+    # Both sentences must agree on which dataset they are talking about. A claim
+    # naming a dataset the other does not name is measuring something else.
+    datasets_a = {t for t in dataset_terms if _mentions(text_a, t)}
+    datasets_b = {t for t in dataset_terms if _mentions(text_b, t)}
+    if datasets_a and datasets_b and not (datasets_a & datasets_b):
+        return None
+
+    values_a = parse_reported_values(claim_a.sentence_span)
+    values_b = parse_reported_values(claim_b.sentence_span)
+    if not values_a or not values_b:
+        return None
+
+    # Compare the best reported value on each side - papers quote their
+    # headline number, and comparing maxima avoids matching an ablation row
+    # against a main result.
+    best_a, best_b = max(values_a), max(values_b)
+    denominator = max(best_a, best_b)
+    if denominator == 0:
+        return None
+
+    gap = abs(best_a - best_b) / denominator
+    if gap < _NUMERIC_DISAGREEMENT_RATIO:
+        return None
+
+    # Any gap past the materiality threshold, on a matched dataset and metric,
+    # is already a confident disagreement - so the scale starts above the
+    # confirmation threshold rather than at the midpoint, and widening gaps
+    # push it towards certainty. Whether the finding is actually confirmed is
+    # then decided by the Req 7.4 conditions, not by this number alone.
+    scaled = min(gap / _NUMERIC_SATURATION_RATIO, 1.0)
+    return round(_NUMERIC_BASE_CONFIDENCE + (0.99 - _NUMERIC_BASE_CONFIDENCE) * scaled, 4)
 
 
 # ---------------------------------------------------------------------------
@@ -67,44 +230,98 @@ def _metrics_comparable(entities_a: list[Entity], entities_b: list[Entity]) -> b
 # ---------------------------------------------------------------------------
 
 
-def _run_nli(
-    premise: str,
-    hypothesis: str,
-    nli_pipeline,  # HuggingFace pipeline or compatible
-) -> tuple[NLILabel, float]:
+def load_nli_pipeline(model_name: str):
     """
-    Run NLI and return (label, confidence).
-    Handles both three-class (entailment/neutral/contradiction) models.
+    Load the NLI pipeline, returning None when it is unavailable.
+
+    A missing model is not fatal: the numeric detector still runs, so the stage
+    degrades rather than returning nothing.
     """
     try:
+        from transformers import pipeline as hf_pipeline
+
+        return hf_pipeline(
+            "text-classification",
+            model=model_name,
+            top_k=None,
+            device=-1,
+        )
+    except Exception as exc:
+        logger.warning(
+            "NLI model '%s' unavailable (%s). "
+            "Falling back to numeric claim comparison only.",
+            model_name,
+            exc,
+        )
+        return None
+
+
+def _run_nli(premise: str, hypothesis: str, nli_pipeline) -> tuple[NLILabel, float]:
+    """
+    Classify the stance of *hypothesis* with respect to *premise*.
+
+    A cross-encoder needs the two sentences as a genuine pair; concatenating
+    them into one string makes the model score a single malformed sequence and
+    return meaningless labels.
+    """
+    if nli_pipeline is None:
+        return NLILabel.NEUTRAL, 0.0
+
+    try:
         result = nli_pipeline(
-            f"{premise} [SEP] {hypothesis}",
+            {"text": premise, "text_pair": hypothesis},
             truncation=True,
             max_length=512,
         )
-        # result is typically a list of {"label": ..., "score": ...}
-        if isinstance(result, list) and result:
-            # Support both direct list and nested list formats
-            items = result[0] if isinstance(result[0], list) else result
-            best = max(items, key=lambda x: x["score"])
-            raw_label = best["label"].upper()
-            score = float(best["score"])
-
-            if "CONTRADICTION" in raw_label:
-                return NLILabel.CONTRADICTION, score
-            elif "ENTAIL" in raw_label:
-                return NLILabel.ENTAILMENT, score
-            else:
-                return NLILabel.NEUTRAL, score
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("NLI inference failed: %s", exc)
+        return NLILabel.NEUTRAL, 0.0
 
-    return NLILabel.NEUTRAL, 0.0
+    items = result
+    if isinstance(items, list) and items and isinstance(items[0], list):
+        items = items[0]
+    if not isinstance(items, list) or not items:
+        return NLILabel.NEUTRAL, 0.0
+
+    best = max(items, key=lambda x: x.get("score", 0.0))
+    raw_label = str(best.get("label", "")).upper()
+    score = float(best.get("score", 0.0))
+
+    if "CONTRADICT" in raw_label:
+        return NLILabel.CONTRADICTION, score
+    if "ENTAIL" in raw_label:
+        return NLILabel.ENTAILMENT, score
+    return NLILabel.NEUTRAL, score
 
 
 # ---------------------------------------------------------------------------
 # Main detector
 # ---------------------------------------------------------------------------
+
+
+def _build_candidate_pairs(
+    scores: list[RelationshipScore],
+    bridge_entities: dict[str, list[str]],
+) -> set[tuple[str, str]]:
+    """
+    Select document pairs worth comparing.
+
+    A pair qualifies if it shares a bridge entity or scores above the candidate
+    threshold. Comparing every pair would be quadratic in corpus size for very
+    little extra yield - unrelated papers do not contradict each other.
+    """
+    pairs: set[tuple[str, str]] = set()
+
+    for doc_ids in bridge_entities.values():
+        for a, b in itertools.combinations(sorted(set(doc_ids)), 2):
+            pairs.add((a, b))
+
+    for score in scores:
+        if score.composite_score >= _CANDIDATE_SCORE_THRESHOLD:
+            a, b = sorted([score.doc_id_a, score.doc_id_b])
+            pairs.add((a, b))
+
+    return pairs
 
 
 def detect_contradictions(
@@ -115,145 +332,159 @@ def detect_contradictions(
     nli_model_name: str = "cross-encoder/nli-deberta-v3-small",
     nli_confidence_threshold: float = 0.60,
     methodology_similarity_threshold: float = 0.30,
+    use_nli: bool = True,
     on_progress: Callable[[ProgressEvent], None] | None = None,
 ) -> list[Contradiction]:
     """
     Detect contradictions across documents.
 
-    Candidates are document pairs that:
-    - share a bridge entity, OR
-    - have a composite relationship_score > 0.4
+    Parameters
+    ----------
+    use_nli:
+        When False, skips loading the NLI model entirely and relies on numeric
+        claim comparison. Useful for fast runs and offline environments.
 
-    Returns a list of Contradiction objects (confirmed + unconfirmed).
+    Returns
+    -------
+    Both confirmed and unconfirmed contradictions, highest confidence first.
     """
-    try:
-        from transformers import pipeline as hf_pipeline
-        nli_pipe = hf_pipeline(
-            "text-classification",
-            model=nli_model_name,
-            top_k=None,
-            device=-1,  # CPU; change to 0 for GPU
-        )
-    except Exception as exc:
-        logger.error("Failed to load NLI model '%s': %s", nli_model_name, exc)
-        return []
 
     def emit(event: ProgressEvent) -> None:
         if on_progress:
             on_progress(event)
 
-    # Index entities by doc_id
+    start = time.perf_counter()
+    nli_pipe = load_nli_pipeline(nli_model_name) if use_nli else None
+    detector = "nli+numeric" if nli_pipe is not None else "numeric"
+
     entity_index: dict[str, list[Entity]] = {}
-    for e in entities:
-        entity_index.setdefault(e.doc_id, []).append(e)
+    for entity in entities:
+        entity_index.setdefault(entity.doc_id, []).append(entity)
 
-    # Build candidate pair set
-    candidate_pairs: set[tuple[str, str]] = set()
+    title_index = {doc.id: doc.title for doc in documents}
 
-    # Pairs linked by bridge entities
-    for _text, doc_ids in bridge_entities.items():
-        for i in range(len(doc_ids)):
-            for j in range(i + 1, len(doc_ids)):
-                a, b = sorted([doc_ids[i], doc_ids[j]])
-                candidate_pairs.add((a, b))
+    methodology_index: dict[frozenset[str], float] = {
+        frozenset([s.doc_id_a, s.doc_id_b]): s.methodology_similarity for s in scores
+    }
 
-    # Pairs with high relationship score
-    for s in scores:
-        if s.composite_score > 0.4:
-            a, b = sorted([s.doc_id_a, s.doc_id_b])
-            candidate_pairs.add((a, b))
+    candidate_pairs = _build_candidate_pairs(scores, bridge_entities)
 
     emit(
         ProgressEvent(
             stage="contradiction_detection",
             status=PipelineStageStatus.RUNNING,
-            message=f"Evaluating {len(candidate_pairs)} candidate document pairs",
+            message=(
+                f"Evaluating {len(candidate_pairs)} candidate document pairs "
+                f"(detector={detector})"
+            ),
+            details={"candidate_pairs": len(candidate_pairs), "detector": detector},
         )
     )
 
     contradictions: list[Contradiction] = []
 
-    for pair_a, pair_b in candidate_pairs:
-        ents_a = entity_index.get(pair_a, [])
-        ents_b = entity_index.get(pair_b, [])
-
+    for doc_a, doc_b in sorted(candidate_pairs):
+        ents_a = entity_index.get(doc_a, [])
+        ents_b = entity_index.get(doc_b, [])
         claims_a = _extract_claims(ents_a)
         claims_b = _extract_claims(ents_b)
-
         if not claims_a or not claims_b:
             continue
 
         ds_compat = _datasets_compatible(ents_a, ents_b)
         met_compat = _metrics_comparable(ents_a, ents_b)
+        shared = _shared_terms(ents_a, ents_b)
+        dataset_terms = _dataset_names(ents_a) | _dataset_names(ents_b)
+        meth_sim = methodology_index.get(frozenset([doc_a, doc_b]), 0.0)
 
-        # Find the methodology similarity from scoring results
-        meth_sim = 0.0
-        for s in scores:
-            if {s.doc_id_a, s.doc_id_b} == {pair_a, pair_b}:
-                meth_sim = s.methodology_similarity
-                break
-
-        # Cross-compare claim pairs (limit to top 5 claims each to bound cost)
-        for claim_a in claims_a[:5]:
-            for claim_b in claims_b[:5]:
+        compared = 0
+        for claim_a in claims_a:
+            for claim_b in claims_b:
+                if compared >= _MAX_PAIRS_PER_DOC_PAIR:
+                    break
                 if claim_a.text.lower().strip() == claim_b.text.lower().strip():
-                    continue  # identical claims — not a contradiction
+                    continue
+                compared += 1
 
-                nli_label, nli_conf = _run_nli(claim_a.sentence_span, claim_b.sentence_span, nli_pipe)
+                label = NLILabel.NEUTRAL
+                confidence = 0.0
+                source = ""
 
-                if nli_label != NLILabel.CONTRADICTION:
+                # Numeric comparison first: it is cheap and more reliable than
+                # NLI on sentences dense with figures.
+                numeric_conf = _numeric_disagreement(
+                    claim_a, claim_b, shared, dataset_terms
+                )
+                if numeric_conf is not None:
+                    label = NLILabel.CONTRADICTION
+                    confidence = numeric_conf
+                    source = "numeric"
+
+                if nli_pipe is not None:
+                    nli_label, nli_conf = _run_nli(
+                        claim_a.sentence_span, claim_b.sentence_span, nli_pipe
+                    )
+                    if nli_label == NLILabel.CONTRADICTION and nli_conf > confidence:
+                        label = NLILabel.CONTRADICTION
+                        confidence = nli_conf
+                        source = "numeric+nli" if numeric_conf is not None else "nli"
+                    elif nli_label == NLILabel.ENTAILMENT and numeric_conf is None:
+                        continue
+
+                if label != NLILabel.CONTRADICTION or confidence < 0.4:
                     continue
 
-                # Determine status (Req 7.4 and 7.6)
                 if (
-                    nli_conf >= nli_confidence_threshold
+                    confidence >= nli_confidence_threshold
                     and (ds_compat or met_compat)
                     and meth_sim >= methodology_similarity_threshold
                 ):
                     status = ContradictionStatus.CONFIRMED
-                    confidence = nli_conf
-                elif nli_conf >= 0.4:
-                    status = ContradictionStatus.UNCONFIRMED
-                    confidence = nli_conf
                 else:
-                    continue
-
-                evidence = [
-                    EvidenceTrail(
-                        source_doc_id=claim_a.doc_id,
-                        source_doc_title="",
-                        section=claim_a.section,
-                        page_number=claim_a.page_number,
-                        sentence_span=claim_a.sentence_span,
-                    ),
-                    EvidenceTrail(
-                        source_doc_id=claim_b.doc_id,
-                        source_doc_title="",
-                        section=claim_b.section,
-                        page_number=claim_b.page_number,
-                        sentence_span=claim_b.sentence_span,
-                    ),
-                ]
+                    status = ContradictionStatus.UNCONFIRMED
 
                 contradictions.append(
                     Contradiction(
-                        doc_id_a=pair_a,
-                        doc_id_b=pair_b,
+                        doc_id_a=doc_a,
+                        doc_id_b=doc_b,
                         claim_a=claim_a.text,
                         claim_b=claim_b.text,
-                        nli_label=nli_label,
-                        nli_confidence=round(nli_conf, 4),
+                        nli_label=label,
+                        nli_confidence=round(confidence, 4),
                         dataset_compatible=ds_compat,
                         metrics_comparable=met_compat,
                         methodology_similarity=round(meth_sim, 4),
                         status=status,
                         confidence=round(confidence, 4),
-                        evidence=evidence,
+                        evidence=[
+                            EvidenceTrail(
+                                source_doc_id=claim_a.doc_id,
+                                source_doc_title=title_index.get(claim_a.doc_id, ""),
+                                section=claim_a.section,
+                                page_number=claim_a.page_number,
+                                sentence_span=claim_a.sentence_span,
+                            ),
+                            EvidenceTrail(
+                                source_doc_id=claim_b.doc_id,
+                                source_doc_title=title_index.get(claim_b.doc_id, ""),
+                                section=claim_b.section,
+                                page_number=claim_b.page_number,
+                                sentence_span=claim_b.sentence_span,
+                            ),
+                        ],
+                        explanation=(
+                            f"Detected by {source} comparison over shared terms: "
+                            f"{', '.join(sorted(shared)) or 'none'}."
+                        ),
                     )
                 )
+            if compared >= _MAX_PAIRS_PER_DOC_PAIR:
+                break
+
+    contradictions.sort(key=lambda c: c.confidence, reverse=True)
 
     confirmed = sum(1 for c in contradictions if c.status == ContradictionStatus.CONFIRMED)
-    unconfirmed = sum(1 for c in contradictions if c.status == ContradictionStatus.UNCONFIRMED)
+    unconfirmed = len(contradictions) - confirmed
 
     emit(
         ProgressEvent(
@@ -263,7 +494,12 @@ def detect_contradictions(
                 f"Contradiction detection complete: "
                 f"{confirmed} confirmed, {unconfirmed} unconfirmed"
             ),
-            details={"confirmed": confirmed, "unconfirmed": unconfirmed},
+            details={
+                "confirmed": confirmed,
+                "unconfirmed": unconfirmed,
+                "detector": detector,
+            },
+            elapsed_seconds=round(time.perf_counter() - start, 2),
         )
     )
 
