@@ -86,7 +86,7 @@ def test_mentions_requires_a_whole_term():
 def test_same_dataset_different_values_is_a_disagreement():
     confidence = _numeric_disagreement(
         claim("a", "ResNet-50 reaches 94.2% accuracy on CIFAR-10."),
-        claim("b", "Our reproduction reaches 87.1% accuracy on CIFAR-10."),
+        claim("b", "Our ResNet-50 reproduction reaches 87.1% accuracy on CIFAR-10."),
         {"cifar-10", "accuracy"},
         {"cifar-10"},
         {"resnet-50"},
@@ -97,18 +97,18 @@ def test_same_dataset_different_values_is_a_disagreement():
 
 def test_different_datasets_are_not_compared():
     assert _numeric_disagreement(
-        claim("a", "We reach 94.2% accuracy on CIFAR-10."),
-        claim("b", "We reach 68.4% accuracy on CIFAR-100."),
+        claim("a", "ResNet-50 reaches 94.2% accuracy on CIFAR-10."),
+        claim("b", "ResNet-50 reaches 68.4% accuracy on CIFAR-100."),
         {"cifar-10", "cifar-100", "accuracy"},
         {"cifar-10", "cifar-100"},
-        set(),
+        {"resnet-50"},
     ) is None
 
 
 def test_close_values_are_not_a_disagreement():
     assert _numeric_disagreement(
-        claim("a", "We reach 94.2% accuracy on CIFAR-10."),
-        claim("b", "We reach 94.0% accuracy on CIFAR-10."),
+        claim("a", "ResNet-50 reaches 94.2% accuracy on CIFAR-10."),
+        claim("b", "ResNet-50 reaches 94.0% accuracy on CIFAR-10."),
         {"cifar-10", "accuracy"},
         {"cifar-10"},
         {"resnet-50"},
@@ -127,14 +127,14 @@ def test_no_shared_term_means_no_comparison():
 
 def test_larger_gap_yields_higher_confidence():
     small = _numeric_disagreement(
-        claim("a", "We reach 90.0% accuracy on CIFAR-10."),
-        claim("b", "We reach 80.0% accuracy on CIFAR-10."),
-        {"cifar-10", "accuracy"}, {"cifar-10"}, set(),
+        claim("a", "ResNet-50 reaches 90.0% accuracy on CIFAR-10."),
+        claim("b", "ResNet-50 reaches 80.0% accuracy on CIFAR-10."),
+        {"cifar-10", "accuracy"}, {"cifar-10"}, {"resnet-50"},
     )
     large = _numeric_disagreement(
-        claim("a", "We reach 90.0% accuracy on CIFAR-10."),
-        claim("b", "We reach 40.0% accuracy on CIFAR-10."),
-        {"cifar-10", "accuracy"}, {"cifar-10"}, set(),
+        claim("a", "ResNet-50 reaches 90.0% accuracy on CIFAR-10."),
+        claim("b", "ResNet-50 reaches 40.0% accuracy on CIFAR-10."),
+        {"cifar-10", "accuracy"}, {"cifar-10"}, {"resnet-50"},
     )
     assert large > small
 
@@ -153,9 +153,11 @@ def build_corpus():
         claim("a", "ResNet-50 reaches 94.2% accuracy on CIFAR-10."),
         named("a", EntityType.DATASET, "CIFAR-10"),
         named("a", EntityType.EVALUATION_METRIC, "accuracy"),
-        claim("b", "Our reproduction reaches 87.1% accuracy on CIFAR-10."),
+        named("a", EntityType.MODEL, "ResNet-50"),
+        claim("b", "Our ResNet-50 reproduction reaches 87.1% accuracy on CIFAR-10."),
         named("b", EntityType.DATASET, "CIFAR-10"),
         named("b", EntityType.EVALUATION_METRIC, "accuracy"),
+        named("b", EntityType.MODEL, "ResNet-50"),
     ]
     scores = [
         RelationshipScore(
@@ -237,19 +239,41 @@ def test_narration_is_not_a_claim():
     """
     assert _numeric_disagreement(
         claim("a", "In Sec. 4.2, we apply Batch Normalization to the ImageNet network at 74.8%."),
-        claim("b", "Our model reaches 77.7% accuracy on ImageNet."),
+        claim("b", "ResNet-50 reaches 77.7% accuracy on ImageNet."),
         {"imagenet", "accuracy"},
         {"imagenet"},
-        set(),
+        {"resnet-50"},
     ) is None
 
 
 def test_shared_dataset_without_a_shared_metric_is_not_comparable():
     """Two papers measuring different things on one dataset are not in conflict."""
     assert _numeric_disagreement(
-        claim("a", "We achieve 74.8% accuracy on ImageNet."),
-        claim("b", "We achieve 45.2% mAP on ImageNet."),
+        claim("a", "ResNet-50 achieves 74.8% accuracy on ImageNet."),
+        claim("b", "ResNet-50 achieves 45.2% mAP on ImageNet."),
         {"imagenet"},
         {"imagenet"},
-        set(),
+        {"resnet-50"},
+    ) is None
+
+
+def test_claims_naming_different_systems_are_not_compared():
+    """Two papers reporting different numbers for different models do not conflict."""
+    assert _numeric_disagreement(
+        claim("a", "ResNet-50 achieves 95.2% accuracy on ImageNet."),
+        claim("b", "MobileNet achieves 76.2% accuracy on ImageNet."),
+        {"imagenet", "accuracy"},
+        {"imagenet"},
+        {"resnet-50", "mobilenet"},
+    ) is None
+
+
+def test_error_rate_is_not_compared_against_accuracy():
+    """Inverted scales: 4.9% error and 76.2% accuracy are different quantities."""
+    assert _numeric_disagreement(
+        claim("a", "ResNet-50 reaches 4.9% top-5 validation error on ImageNet."),
+        claim("b", "ResNet-50 achieves 76.2% accuracy on ImageNet."),
+        {"imagenet", "accuracy"},
+        {"imagenet"},
+        {"resnet-50"},
     ) is None

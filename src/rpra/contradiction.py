@@ -73,6 +73,18 @@ _RESULT_ASSERTION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Metrics where lower is better. Comparing an error rate against an accuracy is
+# comparing inverted scales, so any gap between them is meaningless.
+_LOWER_IS_BETTER_RE = re.compile(
+    r"\b(error\s+rate|error|perplexity|loss|wer|cer|mae|rmse|mse|latency)\b",
+    re.IGNORECASE,
+)
+_HIGHER_IS_BETTER_RE = re.compile(
+    r"\b(accuracy|f1|precision|recall|bleu|rouge|auc|map|miou|iou|ndcg|mrr|"
+    r"exact\s+match|dice)\b",
+    re.IGNORECASE,
+)
+
 # Sentences pointing elsewhere in the paper are describing, not claiming.
 _CROSS_REFERENCE_RE = re.compile(
     r"\b(see|in)\s+(sec\.|sec\b|section|table|fig\.|fig\b|figure|appendix)|"
@@ -183,6 +195,47 @@ def parse_reported_values(sentence: str) -> list[float]:
     return values
 
 
+def _value_polarity(sentence: str) -> tuple[float, str | None] | None:
+    """
+    Return the headline value in *sentence* and whether higher or lower is better.
+
+    Polarity is read from the words immediately around the number, not from the
+    sentence as a whole. That distinction matters: "reaching 4.9% top-5
+    validation error (and 4.8% test error), exceeding the accuracy of human
+    raters" contains both "error" and "accuracy", so a whole-sentence test
+    cannot tell which one the 4.9% belongs to.
+    """
+    best: tuple[float, str | None] | None = None
+
+    for match in _VALUE_RE.finditer(sentence):
+        percent, decimal, bare = match.groups()
+        if percent is not None:
+            value = float(percent) / 100.0
+        elif decimal is not None:
+            value = float(decimal)
+        else:
+            value = float(bare)
+            if value > 1.0:
+                value /= 100.0
+        if not 0.0 < value <= 1.0:
+            continue
+
+        window = sentence[max(0, match.start() - 45) : match.end() + 45]
+        lower = _LOWER_IS_BETTER_RE.search(window)
+        higher = _HIGHER_IS_BETTER_RE.search(window)
+        if lower and not higher:
+            polarity = "lower"
+        elif higher and not lower:
+            polarity = "higher"
+        else:
+            polarity = None
+
+        if best is None or value > best[0]:
+            best = (value, polarity)
+
+    return best
+
+
 def _mentions(text: str, term: str) -> bool:
     """
     Whole-term containment test.
@@ -241,6 +294,20 @@ def _numeric_disagreement(
     if not datasets_a or not datasets_b:
         return None
 
+    # Requiring *both* sides to name a system was tried and rejected: result
+    # sentences routinely say "our model", and the gate silently removed every
+    # true finding along with the false ones. Where both do name systems, the
+    # mismatch check above still applies.
+
+    # Reject inverted scales: "4.9% top-5 error" against "76.2% accuracy" is not
+    # a disagreement, it is two different quantities.
+    polar_a = _value_polarity(text_a)
+    polar_b = _value_polarity(text_b)
+    if polar_a is None or polar_b is None:
+        return None
+    if polar_a[1] and polar_b[1] and polar_a[1] != polar_b[1]:
+        return None
+
     # Both sides must assert a measured outcome rather than narrate one.
     for text in (text_a, text_b):
         if not _RESULT_ASSERTION_RE.search(text):
@@ -259,15 +326,9 @@ def _numeric_disagreement(
     if not metrics_shared:
         return None
 
-    values_a = parse_reported_values(claim_a.sentence_span)
-    values_b = parse_reported_values(claim_b.sentence_span)
-    if not values_a or not values_b:
-        return None
-
-    # Compare the best reported value on each side - papers quote their
-    # headline number, and comparing maxima avoids matching an ablation row
-    # against a main result.
-    best_a, best_b = max(values_a), max(values_b)
+    # Compare the headline value on each side - papers quote their best number,
+    # and comparing maxima avoids matching an ablation row against a main result.
+    best_a, best_b = polar_a[0], polar_b[0]
     denominator = max(best_a, best_b)
     if denominator == 0:
         return None
