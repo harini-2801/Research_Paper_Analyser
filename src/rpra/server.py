@@ -1,17 +1,21 @@
 """
-FastAPI Backend Server for Research Paper Relationship Analyzer.
+FastAPI backend for the Research Paper Relationship Analyzer.
 
-Exposes REST APIs for document upload, pipeline execution, graph retrieval,
-contradictions, research gaps, relationship scores, and WebSocket live progress streaming.
+Exposes the pipeline over REST, streams progress over a WebSocket, and serves
+the web UI.
+
+Every response shape here is derived from the models in :mod:`rpra.models`.
+Serialisation lives in the `_serialise_*` helpers rather than inline in the
+route handlers so that a change to a model surfaces in one place.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
+import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import (
     FastAPI,
@@ -23,26 +27,34 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from rpra.config import load_settings, Settings
-from rpra.models import ProgressEvent, PipelineStageStatus
-from rpra.pipeline import run_pipeline, PipelineResult
+from rpra.config import Settings, load_settings
+from rpra.knowledge_graph import KnowledgeGraph
+from rpra.models import (
+    Contradiction,
+    ContradictionStatus,
+    Document,
+    PipelineStageStatus,
+    ProgressEvent,
+    RelationshipScore,
+    ResearchGap,
+)
+from rpra.pipeline import PipelineResult, run_pipeline
 
 logger = logging.getLogger("rpra.server")
 
-# ----------------------------------------------------------------------
-# Application Setup
-# ----------------------------------------------------------------------
 app = FastAPI(
     title="Research Paper Relationship Analyzer API",
-    description="Explainable Knowledge Graph Construction, Contradiction Detection & Research Gap Discovery API",
-    version="0.1.0",
+    description=(
+        "Knowledge graph construction, contradiction detection and research gap "
+        "discovery over a corpus of research papers."
+    ),
+    version="0.2.0",
 )
 
-# Enable CORS for Vercel, local development, and external frontends
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -51,49 +63,90 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Shared in-memory state
-latest_result: Optional[PipelineResult] = None
-pipeline_running: bool = False
-config_path: Path = Path("config.yaml")
+CONFIG_PATH = Path("config.yaml")
 
 try:
-    current_settings: Settings = load_settings(config_path)
-except Exception:
+    current_settings: Settings = load_settings(CONFIG_PATH)
+except Exception as exc:
+    logger.warning("Could not load %s (%s); using defaults.", CONFIG_PATH, exc)
     current_settings = Settings()
 
+
 # ----------------------------------------------------------------------
-# WebSocket Connection Manager
+# Shared state
 # ----------------------------------------------------------------------
-class ConnectionManager:
+
+
+class AppState:
+    """
+    Mutable state shared between the pipeline worker thread and request handlers.
+
+    The pipeline runs in a worker thread, so every field written there and read
+    from a handler is guarded by the lock.
+    """
+
     def __init__(self) -> None:
-        self.active_connections: List[WebSocket] = []
+        self.lock = threading.Lock()
+        self.result: PipelineResult | None = None
+        self.running: bool = False
+        self.last_error: str | None = None
+        self.events: list[dict] = []
+
+    def snapshot(self) -> tuple[PipelineResult | None, bool, str | None]:
+        with self.lock:
+            return self.result, self.running, self.last_error
+
+
+state = AppState()
+
+
+class ConnectionManager:
+    """Tracks live WebSocket clients and fans progress events out to them."""
+
+    def __init__(self) -> None:
+        self.active: list[WebSocket] = []
 
     async def connect(self, websocket: WebSocket) -> None:
         await websocket.accept()
-        self.active_connections.append(websocket)
+        self.active.append(websocket)
 
     def disconnect(self, websocket: WebSocket) -> None:
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
+        if websocket in self.active:
+            self.active.remove(websocket)
 
     async def broadcast(self, message: dict) -> None:
-        disconnected = []
-        for connection in self.active_connections:
+        stale: list[WebSocket] = []
+        for connection in list(self.active):
             try:
                 await connection.send_json(message)
             except Exception:
-                disconnected.append(connection)
-        for conn in disconnected:
-            self.disconnect(conn)
+                stale.append(connection)
+        for connection in stale:
+            self.disconnect(connection)
+
 
 manager = ConnectionManager()
 
+
 # ----------------------------------------------------------------------
-# Pydantic Schemas for API
+# Request schemas
 # ----------------------------------------------------------------------
+
+
 class RunRequest(BaseModel):
-    skip_extraction: bool = Field(False, description="Skip LLM extraction for demo mode")
-    skip_explanation: bool = Field(False, description="Skip LLM explanation generation")
+    extraction_backend: str = Field(
+        "auto",
+        description="auto | llm | heuristic. 'heuristic' needs no API key.",
+        pattern="^(auto|llm|heuristic)$",
+    )
+    use_nli: bool = Field(
+        True,
+        description="Load the NLI model for contradiction detection.",
+    )
+    skip_explanation: bool = Field(
+        False, description="Skip LLM explanation generation."
+    )
+
 
 class WeightUpdateRequest(BaseModel):
     objective: float = Field(..., ge=0.0, le=1.0)
@@ -102,295 +155,496 @@ class WeightUpdateRequest(BaseModel):
     results_metrics: float = Field(..., ge=0.0, le=1.0)
     citation: float = Field(..., ge=0.0, le=1.0)
 
-# ----------------------------------------------------------------------
-# REST Endpoints
-# ----------------------------------------------------------------------
-@app.get("/api/status")
-async def get_status() -> Dict[str, Any]:
-    """Get system status, current corpus info, and recent result summary."""
-    corpus_dir = Path(current_settings.storage.corpus_input_path)
-    pdf_files = list(corpus_dir.glob("*.pdf")) if corpus_dir.exists() else []
+    def total(self) -> float:
+        return (
+            self.objective
+            + self.methodology
+            + self.dataset
+            + self.results_metrics
+            + self.citation
+        )
 
-    kg_node_count = 0
-    kg_edge_count = 0
-    if latest_result and latest_result.knowledge_graph:
-        kg_node_count = latest_result.knowledge_graph.node_count()
-        kg_edge_count = latest_result.knowledge_graph.edge_count()
+
+# ----------------------------------------------------------------------
+# Serialisation helpers
+# ----------------------------------------------------------------------
+
+
+def _serialise_document(doc: Document) -> dict[str, Any]:
+    pages = [seg.page_end for seg in doc.segments] or [0]
+    return {
+        "doc_id": doc.id,
+        "title": doc.title or doc.id,
+        "category": doc.category.value,
+        "category_confidence": round(doc.category_confidence, 3),
+        "needs_review": bool(doc.metadata.get("needs_manual_review", False)),
+        "segments": [seg.section_type for seg in doc.segments],
+        "segment_count": len(doc.segments),
+        "total_pages": max(pages),
+        "reference_count": doc.metadata.get("reference_count", 0),
+        "file_path": doc.file_path,
+    }
+
+
+def _serialise_contradiction(index: int, c: Contradiction) -> dict[str, Any]:
+    return {
+        "id": f"contradiction-{index + 1}",
+        "doc_a": c.doc_id_a,
+        "doc_b": c.doc_id_b,
+        "claim_a": c.claim_a,
+        "claim_b": c.claim_b,
+        "nli_label": c.nli_label.value,
+        "nli_confidence": round(c.nli_confidence, 3),
+        "confidence": round(c.confidence, 3),
+        "status": c.status.value,
+        "confirmed": c.status == ContradictionStatus.CONFIRMED,
+        "dataset_compatible": c.dataset_compatible,
+        "metrics_comparable": c.metrics_comparable,
+        "methodology_similarity": round(c.methodology_similarity, 3),
+        "explanation": c.explanation or "",
+        "evidence": [e.model_dump() for e in c.evidence],
+    }
+
+
+def _serialise_gap(index: int, g: ResearchGap) -> dict[str, Any]:
+    return {
+        "id": f"gap-{index + 1}",
+        "description": g.description,
+        "novelty_score": round(g.novelty_score, 3),
+        "supporting_docs": g.supporting_doc_ids,
+        "bridge_entities": g.bridge_entities,
+        "confirmed": g.confirmed,
+        "explanation": g.explanation or "",
+        "evidence": [e.model_dump() for e in g.evidence],
+    }
+
+
+def _serialise_score(s: RelationshipScore) -> dict[str, Any]:
+    return {
+        "doc_a": s.doc_id_a,
+        "doc_b": s.doc_id_b,
+        "composite_score": round(s.composite_score, 3),
+        "components": {
+            "objective": round(s.objective_similarity, 3),
+            "methodology": round(s.methodology_similarity, 3),
+            "dataset": round(s.dataset_overlap, 3),
+            "results_metrics": round(s.results_metrics_similarity, 3),
+            "citation": round(s.citation_overlap, 3),
+        },
+        "weights_used": s.weights_used,
+    }
+
+
+def _node_label(node_id: str, attrs: dict) -> str:
+    """Pick the best human-readable label for a graph node."""
+    node_type = attrs.get("node_type")
+    if node_type == "document":
+        return attrs.get("title") or node_id
+    if node_type in ("entity", "bridge_entity"):
+        return attrs.get("text") or node_id
+    return node_id
+
+
+def _serialise_graph(kg: KnowledgeGraph, bridge_entities: dict[str, list[str]]) -> dict:
+    """
+    Convert the knowledge graph into Cytoscape.js element format.
+
+    Node and edge attribute names come from :mod:`rpra.knowledge_graph`
+    (`node_type`, `edge_type`), not from a parallel naming scheme.
+    """
+    graph = kg.graph
+    bridge_texts = {t.lower() for t in bridge_entities}
+
+    nodes = []
+    for node_id, attrs in graph.nodes(data=True):
+        node_type = attrs.get("node_type", "unknown")
+        label = _node_label(node_id, attrs)
+        nodes.append(
+            {
+                "data": {
+                    "id": node_id,
+                    "label": label,
+                    "short_label": label if len(label) <= 46 else label[:44] + "…",
+                    "node_type": node_type,
+                    "entity_type": attrs.get("entity_type", ""),
+                    "category": attrs.get("category", ""),
+                    "doc_id": attrs.get("doc_id", ""),
+                    "section": attrs.get("section", ""),
+                    "page_number": attrs.get("page_number", 0),
+                    "sentence_span": attrs.get("sentence_span", ""),
+                    "is_bridge": (
+                        node_type == "bridge_entity"
+                        or attrs.get("text", "").lower() in bridge_texts
+                    ),
+                }
+            }
+        )
+
+    edges = []
+    for source, target, key, attrs in graph.edges(keys=True, data=True):
+        evidence = attrs.get("evidence") or {}
+        if not isinstance(evidence, dict):
+            evidence = {}
+        edges.append(
+            {
+                "data": {
+                    "id": f"{source}__{target}__{key}",
+                    "source": source,
+                    "target": target,
+                    "edge_type": attrs.get("edge_type", "relates"),
+                    "confidence": attrs.get("confidence", 1.0),
+                    "composite_score": attrs.get("composite_score"),
+                    "is_cross_document": attrs.get("is_cross_document", False),
+                    "source_doc_id": evidence.get("source_doc_id", ""),
+                    "section": evidence.get("section", ""),
+                    "page_number": evidence.get("page_number", 0),
+                    "sentence_span": evidence.get("sentence_span", ""),
+                }
+            }
+        )
+
+    return {"nodes": nodes, "edges": edges}
+
+
+def _load_graph_from_disk() -> KnowledgeGraph | None:
+    graph_file = Path(current_settings.storage.graph_path)
+    if not graph_file.exists():
+        return None
+    try:
+        return KnowledgeGraph.load(graph_file)
+    except Exception as exc:
+        logger.warning("Could not load saved graph %s: %s", graph_file, exc)
+        return None
+
+
+# ----------------------------------------------------------------------
+# REST endpoints
+# ----------------------------------------------------------------------
+
+
+@app.get("/api/status")
+async def get_status() -> dict[str, Any]:
+    """System status, corpus contents and a summary of the most recent run."""
+    result, running, last_error = state.snapshot()
+
+    corpus_dir = Path(current_settings.storage.corpus_input_path)
+    pdf_files = sorted(corpus_dir.glob("*.pdf")) if corpus_dir.exists() else []
+
+    summary = result.summary() if result else {}
 
     return {
-        "status": "running" if pipeline_running else "idle",
+        "status": "running" if running else "idle",
+        "last_error": last_error,
         "corpus_path": str(corpus_dir),
         "pdf_count": len(pdf_files),
         "pdf_files": [f.name for f in pdf_files],
-        "has_results": latest_result is not None,
-        "kg_nodes": kg_node_count,
-        "kg_edges": kg_edge_count,
-        "contradictions_count": len(latest_result.contradictions) if latest_result else 0,
-        "gaps_count": len(latest_result.gaps) if latest_result else 0,
+        "has_results": result is not None,
+        "summary": summary,
+        # Flattened for convenience; the UI reads these directly.
+        "kg_nodes": summary.get("kg_nodes", 0),
+        "kg_edges": summary.get("kg_edges", 0),
+        "contradictions_count": summary.get("contradictions", 0),
+        "confirmed_contradictions": summary.get("confirmed_contradictions", 0),
+        "gaps_count": summary.get("gaps", 0),
+        "entities_count": summary.get("entities", 0),
+        "bridge_entities_count": summary.get("bridge_entities", 0),
         "config": {
             "llm_provider": current_settings.llm.provider,
             "llm_model": current_settings.llm.model,
+            "embedding_model": current_settings.embedding.model,
+            "nli_model": current_settings.nli.model,
+            "extraction_backend": current_settings.pipeline.extraction_backend,
             "weights": current_settings.relationship_scoring.weights.model_dump(),
         },
     }
 
+
 @app.post("/api/upload")
-async def upload_pdf(file: UploadFile = File(...)) -> Dict[str, Any]:
-    """Upload a PDF research paper into the corpus input directory."""
+async def upload_pdf(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Add a PDF to the corpus directory."""
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only PDF files are supported."
+            detail="Only PDF files are supported.",
+        )
+
+    content = await file.read()
+    if not content.startswith(b"%PDF"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{file.filename} is not a valid PDF (missing %PDF header).",
         )
 
     target_dir = Path(current_settings.storage.corpus_input_path)
     target_dir.mkdir(parents=True, exist_ok=True)
-    target_path = target_dir / file.filename
-
-    content = await file.read()
-    with open(target_path, "wb") as f:
-        f.write(content)
+    # Guard against a filename that tries to escape the corpus directory.
+    target_path = target_dir / Path(file.filename).name
+    target_path.write_bytes(content)
 
     return {
-        "filename": file.filename,
+        "filename": target_path.name,
         "size_bytes": len(content),
-        "path": str(target_path),
-        "message": f"Successfully uploaded {file.filename} to corpus.",
+        "message": f"Uploaded {target_path.name} to the corpus.",
     }
 
+
+@app.delete("/api/corpus/{filename}")
+async def delete_pdf(filename: str) -> dict[str, Any]:
+    """Remove a PDF from the corpus directory."""
+    target_dir = Path(current_settings.storage.corpus_input_path)
+    target_path = target_dir / Path(filename).name
+    if not target_path.exists():
+        raise HTTPException(status_code=404, detail=f"{filename} not found in corpus.")
+    target_path.unlink()
+    return {"filename": target_path.name, "message": f"Removed {target_path.name}."}
+
+
 @app.post("/api/run")
-async def trigger_pipeline(request: RunRequest) -> Dict[str, Any]:
-    """Trigger the RPRA pipeline execution."""
-    global latest_result, pipeline_running
-    if pipeline_running:
+async def trigger_pipeline(request: RunRequest) -> dict[str, Any]:
+    """
+    Start a pipeline run in a background thread.
+
+    Progress is streamed to WebSocket clients; poll `/api/status` or watch the
+    socket for completion.
+    """
+    with state.lock:
+        if state.running:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A pipeline run is already in progress.",
+            )
+        state.running = True
+        state.last_error = None
+        state.events = []
+
+    corpus_dir = Path(current_settings.storage.corpus_input_path)
+    if not corpus_dir.exists() or not any(corpus_dir.glob("*.pdf")):
+        with state.lock:
+            state.running = False
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Pipeline execution is already in progress."
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"No PDFs found in {corpus_dir}. Upload papers first, or run "
+                "scripts/make_sample_corpus.py to generate a sample corpus."
+            ),
         )
 
-    pipeline_running = True
+    # Capture the running loop here, on the main thread. The worker thread has
+    # no event loop of its own, so asking for one there raises.
+    loop = asyncio.get_running_loop()
 
-    # Helper callback to stream progress over WebSockets
     def handle_progress(event: ProgressEvent) -> None:
-        loop = asyncio.get_event_loop()
-        event_dict = {
+        payload = {
+            "type": "progress",
             "stage": event.stage,
+            "doc_id": event.doc_id,
             "status": event.status.value,
             "message": event.message,
             "details": event.details,
             "elapsed_seconds": event.elapsed_seconds,
         }
-        if loop.is_running():
-            asyncio.run_coroutine_threadsafe(manager.broadcast(event_dict), loop)
+        with state.lock:
+            state.events.append(payload)
+        asyncio.run_coroutine_threadsafe(manager.broadcast(payload), loop)
 
-    def worker() -> PipelineResult:
-        global latest_result, pipeline_running
+    def worker() -> None:
         try:
-            res = run_pipeline(
+            result = run_pipeline(
                 current_settings,
                 on_progress=handle_progress,
-                skip_extraction=request.skip_extraction,
+                extraction_backend=request.extraction_backend,
+                use_nli=request.use_nli,
                 skip_explanation=request.skip_explanation,
             )
-            latest_result = res
-            return res
+            with state.lock:
+                state.result = result
+            payload = {
+                "type": "complete",
+                "stage": "pipeline",
+                "status": PipelineStageStatus.COMPLETE.value,
+                "message": f"Pipeline complete in {result.elapsed_seconds}s",
+                "details": result.summary(),
+            }
+        except Exception as exc:
+            logger.exception("Pipeline run failed")
+            with state.lock:
+                state.last_error = str(exc)
+            payload = {
+                "type": "error",
+                "stage": "pipeline",
+                "status": PipelineStageStatus.FAILED.value,
+                "message": f"Pipeline failed: {exc}",
+                "details": {},
+            }
         finally:
-            pipeline_running = False
+            with state.lock:
+                state.running = False
 
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, worker)
+        asyncio.run_coroutine_threadsafe(manager.broadcast(payload), loop)
 
-    return {"message": "Pipeline execution started", "skip_extraction": request.skip_extraction}
+    threading.Thread(target=worker, name="rpra-pipeline", daemon=True).start()
+
+    return {
+        "message": "Pipeline started.",
+        "extraction_backend": request.extraction_backend,
+        "use_nli": request.use_nli,
+    }
+
 
 @app.websocket("/ws/progress")
 async def websocket_progress(websocket: WebSocket) -> None:
-    """WebSocket endpoint for streaming real-time progress events."""
+    """Stream pipeline progress events to the UI."""
     await manager.connect(websocket)
     try:
+        # Replay what has happened so far so a client that connects mid-run is
+        # not left with a blank panel.
+        with state.lock:
+            backlog = list(state.events)
+        for event in backlog:
+            await websocket.send_json(event)
+
         while True:
-            # Keep connection alive
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+    except Exception:
+        manager.disconnect(websocket)
+
 
 @app.get("/api/graph")
-async def get_knowledge_graph() -> Dict[str, Any]:
-    """Return Knowledge Graph formatted for Cytoscape.js visualization."""
-    if not latest_result or not latest_result.knowledge_graph:
-        # Fallback: check if graph saved on disk
-        graph_file = Path(current_settings.storage.graph_path)
-        if graph_file.exists():
-            from rpra.knowledge_graph import KnowledgeGraph
-            kg = KnowledgeGraph.load(graph_file)
-        else:
-            return {"nodes": [], "edges": [], "bridge_entities": {}}
-    else:
-        kg = latest_result.knowledge_graph
+async def get_knowledge_graph() -> dict[str, Any]:
+    """The knowledge graph in Cytoscape.js element format."""
+    result, _, _ = state.snapshot()
 
-    nodes = []
-    edges = []
+    if result and result.knowledge_graph:
+        return {
+            **_serialise_graph(result.knowledge_graph, result.bridge_entities),
+            "bridge_entities": result.bridge_entities,
+        }
 
-    for node_id, attrs in kg.graph.nodes(data=True):
-        n_type = attrs.get("type", "unknown")
-        label = attrs.get("label") or node_id
-        nodes.append({
-            "data": {
-                "id": node_id,
-                "label": label,
-                "type": n_type,
-                "doc_id": attrs.get("doc_id", ""),
-                "is_bridge": node_id in (latest_result.bridge_entities if latest_result else {}),
-            }
-        })
+    kg = _load_graph_from_disk()
+    if kg is None:
+        return {"nodes": [], "edges": [], "bridge_entities": {}}
+    return {**_serialise_graph(kg, {}), "bridge_entities": {}}
 
-    for source, target, key, attrs in kg.graph.edges(keys=True, data=True):
-        rel_type = attrs.get("type", "relates")
-        ev = attrs.get("evidence", {})
-        edges.append({
-            "data": {
-                "id": f"{source}->{target}:{key}",
-                "source": source,
-                "target": target,
-                "label": rel_type,
-                "doc_id": ev.get("doc_id", ""),
-                "section": ev.get("section", ""),
-                "page": ev.get("page_number", 0),
-                "sentence": ev.get("sentence_span", ""),
-            }
-        })
-
-    return {
-        "nodes": nodes,
-        "edges": edges,
-        "bridge_entities": latest_result.bridge_entities if latest_result else {},
-    }
-
-@app.get("/api/contradictions")
-async def get_contradictions() -> List[Dict[str, Any]]:
-    """Return all detected contradictions with NLI stance scores & evidence trails."""
-    if not latest_result:
-        return []
-
-    output = []
-    for idx, c in enumerate(latest_result.contradictions):
-        output.append({
-            "id": f"contradiction-{idx+1}",
-            "claim_1": {
-                "text": c.claim_1.text,
-                "doc_id": c.claim_1.doc_id,
-                "section": c.claim_1.section,
-                "page": c.claim_1.page_number,
-                "sentence": c.claim_1.sentence_span,
-            },
-            "claim_2": {
-                "text": c.claim_2.text,
-                "doc_id": c.claim_2.doc_id,
-                "section": c.claim_2.section,
-                "page": c.claim_2.page_number,
-                "sentence": c.claim_2.sentence_span,
-            },
-            "nli_label": c.nli_label,
-            "nli_confidence": round(c.nli_confidence, 3),
-            "signal_fusion_score": round(c.signal_fusion_score, 3),
-            "confirmed": c.confirmed,
-            "bridge_entity": c.bridge_entity,
-            "methodology_similarity": round(c.methodology_similarity, 3),
-            "dataset_compatible": c.dataset_compatible,
-            "explanation": c.explanation.text if c.explanation else "No LLM explanation generated.",
-            "evidence_edges_count": len(c.evidence_graph.edges) if c.evidence_graph else 0,
-        })
-    return output
-
-@app.get("/api/gaps")
-async def get_research_gaps() -> List[Dict[str, Any]]:
-    """Return novelty-ranked research gaps with evidence trails."""
-    if not latest_result:
-        return []
-
-    output = []
-    for idx, g in enumerate(latest_result.gaps):
-        output.append({
-            "id": f"gap-{idx+1}",
-            "entity": g.entity,
-            "doc_1_id": g.doc_1_id,
-            "doc_2_id": g.doc_2_id,
-            "description": g.description,
-            "novelty_score": round(g.novelty_score, 3),
-            "connection_density": round(g.connection_density, 3),
-            "explanation": g.explanation.text if g.explanation else "No LLM explanation generated.",
-            "evidence_edges_count": len(g.evidence_graph.edges) if g.evidence_graph else 0,
-        })
-    return output
-
-@app.get("/api/scores")
-async def get_relationship_scores() -> List[Dict[str, Any]]:
-    """Return pairwise document relationship scores across 5 dimensions."""
-    if not latest_result:
-        return []
-
-    output = []
-    for s in latest_result.scores:
-        output.append({
-            "doc_1_id": s.doc_1_id,
-            "doc_2_id": s.doc_2_id,
-            "composite_score": round(s.composite_score, 3),
-            "components": {
-                "objective": round(s.objective_similarity, 3),
-                "methodology": round(s.methodology_similarity, 3),
-                "dataset": round(s.dataset_overlap, 3),
-                "results_metrics": round(s.results_metrics_similarity, 3),
-                "citation": round(s.citation_overlap, 3),
-            },
-        })
-    return output
 
 @app.get("/api/documents")
-async def get_documents() -> List[Dict[str, Any]]:
-    """Return ingested documents with categories and segment stats."""
-    if not latest_result:
+async def get_documents() -> list[dict[str, Any]]:
+    """Ingested documents with category and segment statistics."""
+    result, _, _ = state.snapshot()
+    if not result:
         return []
+    return [_serialise_document(d) for d in result.documents]
 
-    output = []
-    for d in latest_result.documents:
-        output.append({
-            "doc_id": d.doc_id,
-            "title": d.title,
-            "category": d.category.value if d.category else "Unclassified",
-            "category_confidence": round(d.category_confidence, 2),
-            "total_pages": d.total_pages,
-            "segments": list(d.segments.keys()),
-        })
-    return output
+
+@app.get("/api/contradictions")
+async def get_contradictions(confirmed_only: bool = False) -> list[dict[str, Any]]:
+    """Detected contradictions with stance scores and evidence trails."""
+    result, _, _ = state.snapshot()
+    if not result:
+        return []
+    items = result.contradictions
+    if confirmed_only:
+        items = [c for c in items if c.status == ContradictionStatus.CONFIRMED]
+    return [_serialise_contradiction(i, c) for i, c in enumerate(items)]
+
+
+@app.get("/api/gaps")
+async def get_research_gaps() -> list[dict[str, Any]]:
+    """Novelty-ranked research gaps with evidence trails."""
+    result, _, _ = state.snapshot()
+    if not result:
+        return []
+    return [_serialise_gap(i, g) for i, g in enumerate(result.gaps)]
+
+
+@app.get("/api/scores")
+async def get_relationship_scores() -> list[dict[str, Any]]:
+    """Pairwise relationship scores, strongest first."""
+    result, _, _ = state.snapshot()
+    if not result:
+        return []
+    ordered = sorted(result.scores, key=lambda s: s.composite_score, reverse=True)
+    return [_serialise_score(s) for s in ordered]
+
+
+@app.get("/api/entities")
+async def get_entities(doc_id: str | None = None) -> list[dict[str, Any]]:
+    """Extracted entities, optionally filtered to one document."""
+    result, _, _ = state.snapshot()
+    if not result:
+        return []
+    entities = result.entities
+    if doc_id:
+        entities = [e for e in entities if e.doc_id == doc_id]
+    return [
+        {
+            "id": str(e.id),
+            "doc_id": e.doc_id,
+            "entity_type": e.entity_type.value,
+            "text": e.text,
+            "section": e.section,
+            "page_number": e.page_number,
+            "sentence_span": e.sentence_span,
+        }
+        for e in entities
+    ]
+
+
+@app.get("/api/report")
+async def download_report(fmt: str = "json") -> FileResponse:
+    """Download the generated report as JSON or Markdown."""
+    if fmt not in ("json", "md"):
+        raise HTTPException(status_code=400, detail="fmt must be 'json' or 'md'.")
+
+    output_dir = Path(current_settings.storage.output_path)
+    report_file = output_dir / f"report.{fmt}"
+    if not report_file.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="No report available yet. Run the pipeline first.",
+        )
+
+    media_type = "application/json" if fmt == "json" else "text/markdown"
+    return FileResponse(report_file, media_type=media_type, filename=report_file.name)
+
 
 @app.post("/api/config/weights")
-async def update_weights(req: WeightUpdateRequest) -> Dict[str, Any]:
-    """Update relationship scoring weights with sum validation."""
-    total = req.objective + req.methodology + req.dataset + req.results_metrics + req.citation
+async def update_weights(req: WeightUpdateRequest) -> dict[str, Any]:
+    """
+    Update relationship scoring weights.
+
+    Takes effect on the next run; existing scores are not recomputed.
+    """
+    total = req.total()
     if abs(total - 1.0) > 1e-4:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Weights must sum to 1.0 (current sum: {round(total, 4)})"
+            detail=f"Weights must sum to 1.0 (current sum: {round(total, 4)})",
         )
 
-    w = current_settings.relationship_scoring.weights
-    w.objective = req.objective
-    w.methodology = req.methodology
-    w.dataset = req.dataset
-    w.results_metrics = req.results_metrics
-    w.citation = req.citation
+    weights = current_settings.relationship_scoring.weights
+    weights.objective = req.objective
+    weights.methodology = req.methodology
+    weights.dataset = req.dataset
+    weights.results_metrics = req.results_metrics
+    weights.citation = req.citation
 
     return {
-        "message": "Weights updated successfully",
-        "weights": w.model_dump(),
+        "message": "Weights updated. Re-run the pipeline to apply them.",
+        "weights": weights.model_dump(),
     }
 
+
 # ----------------------------------------------------------------------
-# Static Files Mounting
+# Static UI
 # ----------------------------------------------------------------------
-static_path = Path(__file__).parent / "static"
-if static_path.exists():
-    app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
+
+STATIC_DIR = Path(__file__).parent / "static"
+
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.get("/", include_in_schema=False)
     async def serve_index() -> FileResponse:
-        return FileResponse(static_path / "index.html")
+        return FileResponse(STATIC_DIR / "index.html")
