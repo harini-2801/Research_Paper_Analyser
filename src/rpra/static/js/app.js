@@ -18,7 +18,14 @@
     return "";
   })();
 
+  // Where the frozen demo bundle lives depends on how the page is served:
+  // the FastAPI app mounts it under /static, a plain static host serves it
+  // beside index.html. Try both rather than assume one.
+  var DEMO_URLS = ["/static/demo/data.json", "./demo/data.json", "demo/data.json"];
+
   var state = {
+    demoMode: false,
+    demo: null,
     status: null,
     documents: [],
     contradictions: [],
@@ -178,6 +185,7 @@
   // ------------------------------------------------------------------
 
   function setConn(stateName, label) {
+    if (state.demoMode && stateName !== "demo") return;
     $("conn").setAttribute("data-state", stateName);
     $("conn-label").textContent = label;
   }
@@ -195,6 +203,7 @@
     }
 
     socket.onopen = function () {
+      state.socketRetries = 0;
       setConn("live", "live");
       // The server only uses inbound frames as a keepalive signal.
       setInterval(function () {
@@ -209,11 +218,21 @@
     };
 
     socket.onclose = function () {
+      // On a static host there is no socket to reconnect to. Retrying forever
+      // would spam the console and overwrite the demo-mode label.
+      if (state.demoMode) return;
       setConn("down", "reconnecting");
-      setTimeout(connectSocket, 3000);
+      state.socketRetries = (state.socketRetries || 0) + 1;
+      if (state.socketRetries <= 5) {
+        setTimeout(connectSocket, 3000 * state.socketRetries);
+      } else {
+        setConn("down", "no live backend");
+      }
     };
 
-    socket.onerror = function () { setConn("down", "offline"); };
+    socket.onerror = function () {
+      if (!state.demoMode) setConn("down", "offline");
+    };
   }
 
   function handleProgress(event) {
@@ -261,6 +280,53 @@
   // Data loading
   // ------------------------------------------------------------------
 
+  /**
+   * Load the frozen demo bundle.
+   *
+   * On a static host there is no backend, so every panel would sit empty and
+   * the app would look broken. The bundle holds the exact API payloads from a
+   * real run, so everything except starting a new run keeps working.
+   */
+  async function enterDemoMode(reason) {
+    if (state.demo) return true;
+
+    for (var i = 0; i < DEMO_URLS.length; i++) {
+      try {
+        var response = await fetch(DEMO_URLS[i]);
+        if (!response.ok) continue;
+        state.demo = await response.json();
+        break;
+      } catch (e) { /* try the next candidate */ }
+    }
+
+    if (!state.demo) {
+      setConn("down", "no backend");
+      return false;
+    }
+
+    state.demoMode = true;
+    state.status = state.demo.status;
+    state.documents = state.demo.documents || [];
+    state.contradictions = state.demo.contradictions || [];
+    state.gaps = state.demo.gaps || [];
+    state.scores = state.demo.scores || [];
+    state.graph = state.demo.graph || { nodes: [], edges: [], bridge_entities: {} };
+    if (state.status && state.status.config && state.status.config.weights) {
+      state.weights = state.status.config.weights;
+    }
+
+    setConn("demo", "demo data");
+    var banner = $("demo-banner");
+    banner.setAttribute("data-show", "true");
+    $("demo-banner-text").textContent =
+      "Showing a saved analysis of " + state.documents.length +
+      " arXiv papers. " + (reason || "No backend is connected") +
+      " — browsing works, starting a new run needs a live API.";
+    $("btn-run").disabled = true;
+    $("btn-run").title = "Connect a backend to run the pipeline";
+    return true;
+  }
+
   async function refreshStatus() {
     try {
       var status = await api("/api/status");
@@ -279,13 +345,28 @@
           : "knowledge graph · contradictions · research gaps");
       $("btn-export").disabled = !status.has_results;
       if (status.status === "running" && !state.running) setRunning(true);
+      setConn(state.running ? "busy" : "live", state.running ? "analysing" : "live");
+      state.demoMode = false;
+      $("demo-banner").setAttribute("data-show", "false");
+      return true;
     } catch (e) {
-      setConn("down", "api offline");
+      return false;
     }
   }
 
   async function refreshAll() {
-    await refreshStatus();
+    var live = await refreshStatus();
+
+    if (!live) {
+      var loaded = await enterDemoMode("The API at this address did not respond");
+      if (loaded) {
+        renderEverything();
+        return;
+      }
+      renderEverything();
+      return;
+    }
+
     var results = await Promise.allSettled([
       api("/api/documents"),
       api("/api/contradictions"),
@@ -300,6 +381,10 @@
     if (results[3].status === "fulfilled") state.scores = results[3].value;
     if (results[4].status === "fulfilled") state.graph = results[4].value;
 
+    renderEverything();
+  }
+
+  function renderEverything() {
     $("count-docs").textContent = state.documents.length;
     $("count-contradictions").textContent = state.contradictions.length;
     $("count-gaps").textContent = state.gaps.length;
@@ -416,7 +501,8 @@
     var ink = cssVar("--ink-primary");
     var muted = cssVar("--ink-muted");
     var rule = cssVar("--rule-strong");
-    var surface = cssVar("--surface-1");
+    var surface = cssVar("--bg-page");
+    var accent = cssVar("--c-violet");
 
     cy.style()
       .resetToDefault()
@@ -442,25 +528,40 @@
       .style({
         "background-color": docColor,
         shape: "round-rectangle",
-        width: 42,
-        height: 26,
+        width: 52,
+        height: 30,
         "font-size": 10,
-        "font-weight": 600,
+        "font-weight": 700,
         color: ink,
-        "text-max-width": 132,
+        "text-max-width": 140,
         "text-wrap": "wrap",
+        "text-valign": "center",
+        "text-margin-y": 0,
+        "border-width": 2,
+        "border-color": docColor,
+        "border-opacity": 0.45,
         "z-index": 10,
+        // Cytoscape has no blur, so the glow is a wide translucent border.
+        "shadow-blur": 18,
+        "shadow-color": docColor,
+        "shadow-opacity": 0.7,
       })
       .selector('node[node_type = "bridge_entity"]')
       .style({
         "background-color": bridgeColor,
         shape: "diamond",
-        width: 26,
-        height: 26,
-        "font-size": 9,
-        "font-weight": 600,
+        width: 30,
+        height: 30,
+        "font-size": 9.5,
+        "font-weight": 700,
         color: ink,
+        "border-width": 2,
+        "border-color": bridgeColor,
+        "border-opacity": 0.45,
         "z-index": 8,
+        "shadow-blur": 16,
+        "shadow-color": bridgeColor,
+        "shadow-opacity": 0.7,
       });
 
     // Shape per entity type: the secondary channel that keeps identity legible
@@ -485,7 +586,7 @@
       .style({ "line-color": bridgeColor, opacity: 0.5, width: 1.4 })
       .selector('edge[edge_type = "relationship_score"]')
       .style({
-        "line-color": docColor,
+        "line-color": accent,
         // Edge thickness carries the composite score, so the strongest
         // relationships read first.
         width: "mapData(composite_score, 0, 1, 0.6, 6)",
@@ -503,9 +604,17 @@
         opacity: 0.9,
       })
       .selector(".dimmed")
-      .style({ opacity: 0.07 })
+      .style({ opacity: 0.06 })
       .selector(".highlight")
-      .style({ "border-width": 3, "border-color": ink, "z-index": 30 })
+      .style({
+        "border-width": 4,
+        "border-color": accent,
+        "border-opacity": 1,
+        "shadow-blur": 26,
+        "shadow-color": accent,
+        "shadow-opacity": 0.95,
+        "z-index": 30,
+      })
       .update();
   }
 
@@ -530,7 +639,9 @@
       maxZoom: 3.2,
     });
 
+    state.cy = cy;
     applyGraphStyle(cy);
+    applyGraphFilter();
     runLayout(cy);
 
     cy.on("tap", "node", function (evt) {
@@ -552,19 +663,26 @@
   }
 
   function runLayout(cy) {
-    cy.layout({
+    var visible = cy.nodes().filter(function (n) { return n.style("display") !== "none"; });
+    var target = visible.length ? visible.union(visible.connectedEdges()) : cy.elements();
+
+    // Iterations are the expensive part; a large graph gets fewer of them so
+    // the browser stays responsive.
+    var iterations = target.length > 600 ? 350 : target.length > 250 ? 600 : 1000;
+
+    target.layout({
       name: "cose",
       animate: false,
-      nodeRepulsion: 9000,
-      idealEdgeLength: 78,
-      edgeElasticity: 110,
-      gravity: 42,
-      numIter: 900,
+      nodeRepulsion: 11000,
+      idealEdgeLength: 90,
+      edgeElasticity: 120,
+      gravity: 38,
+      numIter: iterations,
       randomize: true,
-      padding: 34,
+      padding: 40,
       nodeDimensionsIncludeLabels: true,
     }).run();
-    cy.fit(undefined, 36);
+    cy.fit(target, 40);
   }
 
   function highlightNeighbourhood(cy, node) {
@@ -582,17 +700,41 @@
     state.cy.animate({ center: { eles: node }, zoom: 1.15 }, { duration: 320 });
   }
 
+  /**
+   * A real corpus produces well over a thousand nodes, which renders as an
+   * unreadable hairball. "overview" shows only papers and the bridge concepts
+   * that connect them - the structure a reader actually wants - and the other
+   * modes open it up.
+   */
+  function nodeMatchesMode(data, mode) {
+    if (mode === "all") return true;
+    if (mode === "overview") {
+      return data.node_type === "document" || data.node_type === "bridge_entity";
+    }
+    return data.node_type === mode;
+  }
+
   function applyGraphFilter() {
     if (!state.cy) return;
     var query = $("graph-search").value.trim().toLowerCase();
-    var kind = $("graph-filter").value;
+    var mode = $("graph-filter").value;
+    var shown = 0;
 
-    state.cy.nodes().forEach(function (node) {
-      var data = node.data();
-      var matchesQuery = !query || String(data.label || "").toLowerCase().indexOf(query) >= 0;
-      var matchesKind = kind === "all" || data.node_type === kind;
-      node.style("display", matchesQuery && matchesKind ? "element" : "none");
+    state.cy.batch(function () {
+      state.cy.nodes().forEach(function (node) {
+        var data = node.data();
+        var matchesQuery = !query || String(data.label || "").toLowerCase().indexOf(query) >= 0;
+        var visible = matchesQuery && nodeMatchesMode(data, mode);
+        node.style("display", visible ? "element" : "none");
+        if (visible) shown++;
+      });
     });
+
+    var counter = $("graph-count");
+    if (counter) {
+      counter.textContent = shown + " / " + state.cy.nodes().length + " nodes";
+    }
+    return shown;
   }
 
   // ------------------------------------------------------------------
@@ -887,7 +1029,7 @@
         "</div></div>" +
 
         '<div class="spread">' +
-        '<div class="claim">' +
+        '<div class="claim claim--a">' +
         '<div class="claim__source">' +
         '<svg class="icon icon--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
         'stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg>' +
@@ -898,7 +1040,7 @@
 
         '<div class="spread__divider"><span class="spread__badge">VERSUS</span></div>' +
 
-        '<div class="claim">' +
+        '<div class="claim claim--b">' +
         '<div class="claim__source">' +
         '<svg class="icon icon--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
         'stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg>' +
@@ -1199,6 +1341,23 @@
     });
 
     $("btn-run").addEventListener("click", runPipeline);
+
+    $("btn-connect-api").addEventListener("click", function () {
+      var current = API_BASE || "";
+      var entered = window.prompt(
+        "Backend URL (for example https://your-api.onrender.com). " +
+        "Leave blank to use this same origin.",
+        current
+      );
+      if (entered === null) return;
+      var url = new URL(window.location.href);
+      if (entered.trim()) {
+        url.searchParams.set("api", entered.trim().replace(/\/$/, ""));
+      } else {
+        url.searchParams.delete("api");
+      }
+      window.location.href = url.toString();
+    });
     $("btn-export").addEventListener("click", function () {
       window.open(API_BASE + "/api/report?fmt=md", "_blank");
     });
@@ -1258,7 +1417,10 @@
     });
 
     $("graph-search").addEventListener("input", applyGraphFilter);
-    $("graph-filter").addEventListener("change", applyGraphFilter);
+    $("graph-filter").addEventListener("change", function () {
+      applyGraphFilter();
+      if (state.cy) runLayout(state.cy);
+    });
     $("btn-fit").addEventListener("click", function () {
       if (state.cy) state.cy.fit(undefined, 36);
     });
@@ -1276,8 +1438,9 @@
       if (state.cy) state.cy.elements().removeClass("dimmed highlight");
     });
 
-    connectSocket();
-    refreshAll();
+    refreshAll().then(function () {
+      if (!state.demoMode) connectSocket();
+    });
   }
 
   if (document.readyState === "loading") {

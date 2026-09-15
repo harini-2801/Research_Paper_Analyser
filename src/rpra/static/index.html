@@ -8,12 +8,14 @@
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 
 <link rel="stylesheet" href="/static/css/rpra.css" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#128218;</text></svg>">
 </head>
 <body>
+
+<div class="aurora" aria-hidden="true"><span></span><span></span><span></span></div>
 
 <div class="app">
 
@@ -58,6 +60,15 @@
       </button>
     </div>
   </header>
+
+  <!-- Demo-mode notice, shown when no live backend is reachable -->
+  <div class="banner" id="demo-banner" data-show="false">
+    <span class="banner__tag">Demo</span>
+    <span class="banner__text" id="demo-banner-text">
+      Showing a saved analysis of 30 arXiv papers. Connect a backend to analyse your own corpus.
+    </span>
+    <button class="btn btn--ghost" id="btn-connect-api">Connect backend</button>
+  </div>
 
   <!-- ==================== WORKSPACE ==================== -->
   <div class="workspace">
@@ -106,27 +117,27 @@
 
       <!-- Figures: plain numbers, no chart - a single value needs no plot -->
       <section class="figures" aria-label="Corpus summary">
-        <div class="figure">
+        <div class="figure figure--papers">
           <span class="figure__label">Papers</span>
           <span class="figure__value num" id="fig-papers">0</span>
           <span class="figure__note" id="fig-papers-note">none ingested</span>
         </div>
-        <div class="figure">
+        <div class="figure figure--graph">
           <span class="figure__label">Graph</span>
           <span class="figure__value num" id="fig-nodes">0</span>
           <span class="figure__note" id="fig-nodes-note">0 edges</span>
         </div>
-        <div class="figure">
+        <div class="figure figure--bridges">
           <span class="figure__label">Bridge concepts</span>
           <span class="figure__value num" id="fig-bridges">0</span>
           <span class="figure__note" id="fig-bridges-note">shared across papers</span>
         </div>
-        <div class="figure">
+        <div class="figure figure--contradictions">
           <span class="figure__label">Contradictions</span>
           <span class="figure__value num" id="fig-contradictions">0</span>
           <span class="figure__note" id="fig-contradictions-note">0 confirmed</span>
         </div>
-        <div class="figure">
+        <div class="figure figure--gaps">
           <span class="figure__label">Research gaps</span>
           <span class="figure__value num" id="fig-gaps">0</span>
           <span class="figure__note" id="fig-gaps-note">novelty ranked</span>
@@ -172,14 +183,16 @@
           </div>
           <div class="toolbar__group">
             <input class="input" id="graph-search" type="search" placeholder="Filter nodes&hellip;" style="width:158px" />
-            <select class="select" id="graph-filter" style="width:142px">
-              <option value="all">All nodes</option>
+            <select class="select" id="graph-filter" style="width:168px">
+              <option value="overview" selected>Papers + bridge concepts</option>
+              <option value="all">Everything</option>
               <option value="document">Papers only</option>
               <option value="bridge_entity">Bridge concepts</option>
               <option value="entity">Entities only</option>
             </select>
             <button class="btn btn--ghost" id="btn-relayout">Re-layout</button>
             <button class="btn btn--ghost" id="btn-fit">Fit</button>
+              <span class="eyebrow mono" id="graph-count" style="margin-left:2px"></span>
           </div>
         </div>
         <div class="graph-host" id="graph-host">
