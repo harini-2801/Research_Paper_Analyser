@@ -2,11 +2,19 @@
   "version": 2,
   "builds": [
     {
-      "src": "src/rpra/static/**/*",
+      "src": "src/rpra/static/**",
       "use": "@vercel/static"
     }
   ],
   "routes": [
+    {
+      "src": "/static/(.*)",
+      "dest": "/src/rpra/static/$1"
+    },
+    {
+      "src": "/",
+      "dest": "/src/rpra/static/index.html"
+    },
     {
       "src": "/(.*)",
       "dest": "/src/rpra/static/$1"

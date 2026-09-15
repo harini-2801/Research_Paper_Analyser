@@ -139,30 +139,44 @@ Research Papers (PDFs)
 ResearchPaperAnalyer/
 ├── config.yaml                  # Single config file for all pipeline parameters
 ├── pyproject.toml               # Package definition and dependencies
-├── pytest.ini                   # Test configuration
+├── IMPLEMENTATION_PLAN.md       # Status against the 18 requirements, and what remains
+│
+├── scripts/
+│   └── make_sample_corpus.py    # Generates a demo corpus with known contradictions
 │
 ├── src/rpra/
-│   ├── __init__.py
-│   ├── models.py                # Core domain models (Entity, Relation, KG, etc.)
+│   ├── models.py                # Core domain models (Entity, Relation, Contradiction…)
 │   ├── config.py                # Config loader + Pydantic validation
 │   ├── ingestion.py             # PDF parsing and segmentation (PyMuPDF)
+│   ├── citations.py             # Reference-list parsing; citation score dimension
 │   ├── classification.py        # Document type classifier
-│   ├── extraction.py            # LLM entity + relation extraction
+│   ├── extraction.py            # Extraction driver + backend selection
+│   ├── heuristic_extraction.py  # LLM-free extraction (gazetteer + cue phrases)
+│   ├── embeddings.py            # Entity vectors, with a deterministic fallback
+│   ├── scoring.py               # Weighted five-dimension relationship scoring
 │   ├── knowledge_graph.py       # KG construction, query, serialisation
-│   ├── scoring.py               # Weighted relationship scoring
-│   ├── contradiction.py         # NLI-based contradiction detection
-│   ├── gap_discovery.py         # Research gap discovery
+│   ├── contradiction.py         # NLI + numeric contradiction detection
+│   ├── gap_discovery.py         # Stated / absent / weak gap detectors
 │   ├── explainer.py             # RAG-grounded LLM explanation generation
 │   ├── reporter.py              # JSON + Markdown export
 │   ├── progress.py              # Rich progress panel + JSON log
 │   ├── pipeline.py              # End-to-end orchestrator
-│   └── cli.py                   # CLI entry point (rpra command)
+│   ├── server.py                # FastAPI REST + WebSocket backend
+│   ├── cli.py                   # CLI entry point (rpra command)
+│   └── static/                  # Web UI (HTML, CSS, JS)
 │
-└── tests/
-    ├── test_config.py           # Config validation tests
-    ├── test_models.py           # Domain model + KG round-trip tests
-    ├── test_classification.py   # Document classification tests
-    └── test_scoring.py          # Relationship scoring tests
+└── tests/                       # 139 tests
+    ├── test_config.py           # Config validation
+    ├── test_models.py           # Domain models + KG round-trip (Req 18)
+    ├── test_classification.py   # Document classification
+    ├── test_scoring.py          # Relationship scoring maths
+    ├── test_embeddings.py       # Embedding backend + persistence (Req 16)
+    ├── test_heuristic_extraction.py  # Rule-based extraction
+    ├── test_citations.py        # Reference parsing + citation overlap
+    ├── test_contradiction.py    # Contradiction detection (Req 7)
+    ├── test_gap_discovery.py    # Gap detectors (Req 8)
+    ├── test_server.py           # API against populated results
+    └── test_pipeline_e2e.py     # Full pipeline over generated PDFs
 ```
 
 ---
@@ -200,13 +214,13 @@ Entities shared across two or more documents (datasets, models, algorithms) are 
 ## Installation
 
 ```bash
-# Clone the repository
-cd "ResearchPaperAnalyer"
-
-# Install with dev dependencies
 pip install -e ".[dev]"
+```
 
-# Set your OpenAI API key
+An OpenAI API key is optional. Without one the pipeline uses the heuristic
+extraction backend, which runs fully offline:
+
+```bash
 set OPENAI_API_KEY=your-key-here    # Windows CMD
 # export OPENAI_API_KEY=your-key    # Linux/macOS
 ```
@@ -215,53 +229,115 @@ set OPENAI_API_KEY=your-key-here    # Windows CMD
 
 ## Usage
 
-### Validate configuration
+### Generate a sample corpus
+
+The repository ships a generator that produces six papers with shared datasets,
+cross-citations, explicit gap statements, and two planted contradictions — so
+the pipeline has something to find on a first run:
+
 ```bash
-rpra validate-config
-```
-Output:
-```
-╭─── Config Validation ───╮
-│ ✓ Configuration is valid │
-╰─────────────────────────╯
-  LLM provider  : openai / gpt-4o-mini
-  Embedding     : sentence-transformers/all-MiniLM-L6-v2
-  NLI model     : cross-encoder/nli-deberta-v3-small
-  Score weights : obj=0.25 meth=0.25 ds=0.2 res=0.2 cite=0.1
+python scripts/make_sample_corpus.py
 ```
 
-### Launch Modern Glassmorphism Web App & REST Server
+### Run the pipeline offline (no API key, no model downloads)
+
+```bash
+rpra run --extraction-backend heuristic --no-nli
+```
+
+On the sample corpus this produces, in about 14 seconds:
+
+```
+Documents processed : 6
+Extraction backend  : heuristic
+Embedding backend   : sentence-transformers
+Entities extracted  : 136
+Bridge concepts     : 22
+KG nodes / edges    : 164 / 223
+Contradictions      : 6
+Research gaps       : 52
+```
+
+### Run with an LLM
+
+```bash
+rpra run --extraction-backend llm
+```
+
+LLM and heuristic results are merged: the gazetteer reliably catches dataset and
+metric names an LLM paraphrases away, while the LLM catches objectives and
+limitations no rule covers.
+
+### Launch the web UI
+
 ```bash
 rpra serve
 ```
-This automatically launches the FastAPI REST/WebSocket server and opens the Glassmorphism Web Interface at `http://localhost:8000`.
 
-### Demo mode (no LLM API key required)
+Opens `http://localhost:8000` with the knowledge graph explorer, relationship
+matrix, contradiction spreads, ranked research gaps, and a live progress stream
+over WebSocket. Every view is clickable through to the verbatim sentence the
+finding came from.
+
+### Validate configuration
+
 ```bash
-rpra run --skip-extraction
+rpra validate-config
 ```
 
-### Custom config
-```bash
-rpra run --config my-config.yaml
-```
+---
+
+## Extraction Backends
+
+| Backend | Requires | Use |
+|---|---|---|
+| `heuristic` | nothing | Offline runs, demos, CI |
+| `llm` | `OPENAI_API_KEY` | Highest recall |
+| `auto` (default) | — | LLM when a key is present, heuristic otherwise |
+
+`auto` exists so a run never silently produces an empty knowledge graph because
+no credentials were configured.
+
+---
+
+## API
+
+| Method | Route | Purpose |
+|---|---|---|
+| `GET` | `/api/status` | System state, corpus contents, last run summary |
+| `POST` | `/api/upload` | Add a PDF to the corpus |
+| `DELETE` | `/api/corpus/{filename}` | Remove a PDF |
+| `POST` | `/api/run` | Start a pipeline run |
+| `WS` | `/ws/progress` | Live progress events |
+| `GET` | `/api/graph` | Knowledge graph, Cytoscape format |
+| `GET` | `/api/documents` | Ingested documents and categories |
+| `GET` | `/api/contradictions` | Contradictions with evidence trails |
+| `GET` | `/api/gaps` | Novelty-ranked research gaps |
+| `GET` | `/api/scores` | Pairwise scores across five dimensions |
+| `GET` | `/api/entities` | Extracted entities |
+| `GET` | `/api/report?fmt=json\|md` | Download the report |
+| `POST` | `/api/config/weights` | Update scoring weights |
 
 ---
 
 ## Deployment Instructions
 
 ### 1. Frontend Deployment (Vercel)
-The single-page Glassmorphism web application is ready for Vercel deployment via `vercel.json`:
-1. Connect repository `https://github.com/harini-2801/Research_Paper_Analyser.git` to **Vercel**.
-2. Vercel automatically detects static content in `src/rpra/static`.
-3. Set environment variable `API_BASE_URL` in Vercel to point to your deployed Render backend API URL.
+The static web UI deploys to Vercel via `vercel.json`:
+1. Connect the repository to **Vercel**; `vercel.json` routes `/static/*` to
+   `src/rpra/static`.
+2. Point the frontend at the backend by appending `?api=https://your-api.onrender.com`
+   to the URL, or by setting `window.RPRA_API_BASE` before `app.js` loads.
+
+Note: neither deployment target has been tested against a live host.
 
 ### 2. Backend Deployment (Render)
 The FastAPI backend server is configured for Render via `render.yaml`:
 1. Create a new **Web Service** on **Render** connected to your repository.
 2. Select **Python** runtime with Build Command: `pip install -e .`
 3. Start Command: `uvicorn rpra.server:app --host 0.0.0.0 --port $PORT`
-4. Add environment variable `OPENAI_API_KEY`.
+4. Optionally add `OPENAI_API_KEY`. Without it the service runs the
+   heuristic extraction backend.
 
 ---
 
@@ -270,15 +346,28 @@ The FastAPI backend server is configured for Render via `render.yaml`:
 ## Test Results
 
 ```
-26 passed in 1.23s
+139 passed
 ```
 
-| Test Module | Coverage |
+| Test module | Covers |
 |---|---|
-| `test_config.py` | Config loading, missing keys, invalid weights, file-not-found |
-| `test_models.py` | Entity round-trip, KG round-trip (Req 18), KG queries, bridge entities |
-| `test_classification.py` | Experimental/Survey/Methodological detection, low-confidence flag |
-| `test_scoring.py` | Jaccard, cosine, dataset overlap, composite score formula verification |
+| `test_config.py` | Config loading, missing keys, invalid weights |
+| `test_models.py` | Entity round-trip, KG round-trip (Req 18), bridge queries |
+| `test_classification.py` | Category detection, low-confidence flagging |
+| `test_scoring.py` | Jaccard, cosine, composite score formula |
+| `test_embeddings.py` | Backend selection, determinism, persistence (Req 16) |
+| `test_heuristic_extraction.py` | Gazetteer, cue phrases, relation inference |
+| `test_citations.py` | Reference splitting, key extraction, citation overlap |
+| `test_contradiction.py` | Value parsing, whole-term matching, Req 7.4 conditions |
+| `test_gap_discovery.py` | Stated / absent / weak detectors, novelty ranking |
+| `test_server.py` | Every endpoint against a populated pipeline result |
+| `test_pipeline_e2e.py` | Whole pipeline over generated PDFs, offline |
+
+`test_pipeline_e2e.py` is the one that matters most: it runs every stage over
+real PDFs and asserts the properties that were silently broken before — that
+every entity receives an embedding, that the semantic scoring dimensions are not
+all zero, that the citation dimension contributes, and that related papers
+outrank unrelated ones.
 
 ---
 
@@ -315,6 +404,10 @@ gap_discovery:
 storage:
   corpus_input_path: ./data/papers
   output_path: ./output
+
+pipeline:
+  extraction_backend: auto  # auto | llm | heuristic
+  use_nli: true             # false skips the ~280 MB NLI model download
 ```
 
 All values are validated at startup against defined ranges. Missing required keys or out-of-range values terminate the pipeline with a descriptive error message (Req 14).
@@ -353,12 +446,15 @@ After a pipeline run, the `./output/` directory contains:
 
 ## What's Next
 
-| Phase | Planned Work |
+See `IMPLEMENTATION_PLAN.md` for the full assessment against all 18
+requirements. Outstanding work:
+
+| Phase | Work |
 |---|---|
-| Embeddings | Integrate `sentence-transformers` for entity/document vector generation |
-| Incremental KG | Full incremental update mode (process only new documents) |
-| Evaluation | Run on a real corpus (e.g., papers from the literature survey itself) |
-| UI | Web-based progress panel and KG browser |
+| Requirements | Incremental KG update (Req 11); pruned Evidence Graph object (Req 9) |
+| Scale | Blocking for O(n²) scoring; streaming results; graph store past ~100k nodes |
+| Quality | Two-column PDF handling; `page_end` refinement; domain gazetteers; a labelled evaluation set |
+| Deployment | Live deployment test; authentication; upload limits |
 
 ---
 
