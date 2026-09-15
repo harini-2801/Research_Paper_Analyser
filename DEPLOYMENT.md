@@ -47,7 +47,7 @@ are configuring by hand, these are the settings:
 | Language / Runtime | **Python 3** |
 | Branch | `main` |
 | Root Directory | *(leave blank)* |
-| Build Command | `pip install --upgrade pip && pip install -e .` |
+| Build Command | `pip install --upgrade pip && pip install -r requirements.txt` |
 | Start Command | `uvicorn rpra.server:app --host 0.0.0.0 --port $PORT --workers 1` |
 | Instance Type | **Free** is enough |
 | Health Check Path | `/api/status` |
@@ -72,7 +72,7 @@ A JSON response with `"status": "idle"` means the API is up.
 
 ### Why the build command installs so little
 
-`pip install -e .` installs the **core** dependencies only — about 174 MB.
+`requirements.txt` holds the **core** dependencies only — about 174 MB.
 The transformer stack (`torch`, `transformers`, `sentence-transformers`) is
 roughly 2.5 GB installed and does not fit a free instance.
 
@@ -142,8 +142,12 @@ pip install -e ".[ml,dev]"
 
 ## Troubleshooting
 
+**`-e option requires 1 argument`.** The trailing `.` was dropped from the
+build command. Use the `requirements.txt` form above, which has no trailing
+dot to lose.
+
 **Build fails, out of memory or disk.** The build command is installing the ML
-extras. It should be `pip install -e .` with no bracket suffix.
+extras. It must not carry a `[ml]` suffix.
 
 **`/api/status` returns 404.** The start command is wrong. It must be
 `uvicorn rpra.server:app`, not `main:app` or `app:app`.

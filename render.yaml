@@ -21,7 +21,11 @@ services:
     plan: free
     region: oregon
 
-    buildCommand: "pip install --upgrade pip && pip install -e ."
+    # Deliberately installs from requirements.txt rather than `pip install -e .`.
+    # A build command ending in a bare "." loses its last character too easily
+    # when pasted into a web form, and `pip install -e` without an argument
+    # fails with a message that does not obviously name the cause.
+    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
     startCommand: "uvicorn rpra.server:app --host 0.0.0.0 --port $PORT --workers 1"
 
     healthCheckPath: /api/status
