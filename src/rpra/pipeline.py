@@ -50,6 +50,7 @@ from rpra.models import (
     ResearchGap,
 )
 from rpra.progress import safe_callback
+from rpra.report_pdf import export_pdf
 from rpra.reporter import export_json, export_markdown
 from rpra.scoring import score_corpus
 
@@ -67,6 +68,7 @@ class PipelineResult:
     ingestion_errors: list[dict] = field(default_factory=list)
     report_json: Path | None = None
     report_md: Path | None = None
+    report_pdf: Path | None = None
     graph_path: Path | None = None
     embedding_backend: str = ""
     extraction_backend: str = ""
@@ -376,6 +378,10 @@ def run_pipeline(
         )
     )
 
+    # The reports quote the elapsed time, so it has to be set before they are
+    # written rather than at the very end - otherwise every report says 0.0s.
+    result.elapsed_seconds = round(time.perf_counter() - start_total, 2)
+
     output_path = Path(settings.storage.output_path)
     result.report_json = export_json(
         documents, result.contradictions, result.gaps, result.scores, output_path
@@ -383,15 +389,37 @@ def run_pipeline(
     result.report_md = export_markdown(
         documents, result.contradictions, result.gaps, result.scores, output_path
     )
+    try:
+        result.report_pdf = export_pdf(
+            documents, result.contradictions, result.gaps, result.scores,
+            output_path,
+            summary=result.summary(),
+            corpus_name=Path(settings.storage.corpus_input_path).name or "Corpus",
+        )
+    except Exception as exc:
+        emit(
+            ProgressEvent(
+                stage="export",
+                status=PipelineStageStatus.RUNNING,
+                message=f"PDF report could not be generated: {exc}",
+            )
+        )
 
     emit(
         ProgressEvent(
             stage="export",
             status=PipelineStageStatus.COMPLETE,
-            message=f"Reports saved -> {result.report_json.name}, {result.report_md.name}",
+            message=(
+                "Reports saved -> "
+                + ", ".join(
+                    p.name for p in (result.report_json, result.report_md,
+                                     result.report_pdf) if p
+                )
+            ),
             details={
                 "json": str(result.report_json),
                 "markdown": str(result.report_md),
+                "pdf": str(result.report_pdf) if result.report_pdf else "",
             },
         )
     )

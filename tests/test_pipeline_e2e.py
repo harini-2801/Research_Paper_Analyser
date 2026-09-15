@@ -21,18 +21,15 @@ from rpra.config import Settings
 from rpra.models import ContradictionStatus
 from rpra.pipeline import run_pipeline
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-
 
 @pytest.fixture(scope="module")
 def corpus(tmp_path_factory) -> Path:
     """Generate the sample PDF corpus once for the whole module."""
     pytest.importorskip("fitz", reason="PyMuPDF is required to build the corpus")
-    from make_sample_corpus import PAPERS, build_pdf
+    from rpra.sample_corpus import build_corpus
 
     directory = tmp_path_factory.mktemp("papers")
-    for paper in PAPERS:
-        build_pdf(paper, directory)
+    build_corpus(directory)
     return directory
 
 
@@ -212,6 +209,26 @@ def test_stated_gaps_are_traceable_to_a_sentence(result):
 def test_reports_are_written(result):
     assert result.report_json.exists()
     assert result.report_md.exists()
+    assert result.report_pdf is not None and result.report_pdf.exists()
+
+
+def test_the_pdf_report_is_a_real_document(result):
+    """A report nobody can open is not a report."""
+    fitz = pytest.importorskip("fitz")
+
+    doc = fitz.open(str(result.report_pdf))
+    try:
+        assert len(doc) >= 3
+        text = chr(10).join(page.get_text() for page in doc)
+    finally:
+        doc.close()
+
+    for section in ("Strongest relationships", "Contradictions", "Research gaps"):
+        assert section in text, f"{section} missing from the PDF"
+
+    # Extraction artefacts must not survive into a document people read.
+    assert "ﬁ" not in text and "ﬂ" not in text
+    assert f"{len(result.documents)}" in text
     assert result.report_md.read_text(encoding="utf-8").startswith("# Research Paper")
 
 

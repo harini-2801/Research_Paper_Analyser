@@ -219,11 +219,7 @@ def test_title_cleanup_leaves_ordinary_titles_alone():
 @pytest.fixture(scope="module")
 def sample_pdf(tmp_path_factory):
     pytest.importorskip("fitz", reason="PyMuPDF required")
-    import sys
-    from pathlib import Path
-
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-    from make_sample_corpus import PAPERS, build_pdf
+    from rpra.sample_corpus import PAPERS, build_pdf
 
     directory = tmp_path_factory.mktemp("ingest")
     return build_pdf(PAPERS[0], directory)

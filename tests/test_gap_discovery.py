@@ -82,16 +82,25 @@ def test_duplicate_statements_are_reported_once():
 # ---------------------------------------------------------------------------
 
 
-def test_absent_pairing_between_established_concepts_is_found():
-    # "contrastive learning" and "CIFAR-10" are each well attested, but never
-    # appear in the same paper.
-    entities = [
-        entity("a", EntityType.METHODOLOGY, "contrastive learning"),
-        entity("b", EntityType.METHODOLOGY, "contrastive learning"),
-        entity("c", EntityType.DATASET, "CIFAR-10"),
-        entity("d", EntityType.DATASET, "CIFAR-10"),
+def _related_scores(doc_ids, value=0.6):
+    """Pairwise scores marking a set of papers as belonging to one conversation."""
+    return [
+        RelationshipScore(doc_id_a=a, doc_id_b=b, composite_score=value)
+        for i, a in enumerate(sorted(doc_ids))
+        for b in sorted(doc_ids)[i + 1:]
     ]
-    kg, _, scores, titles = build(entities)
+
+
+def test_absent_pairing_between_established_concepts_is_found():
+    # Each concept appears in three papers, and the two groups of papers are
+    # related - the same conversation - but the pairing never occurs.
+    entities = [
+        entity(d, EntityType.METHODOLOGY, "contrastive learning") for d in "abc"
+    ] + [
+        entity(d, EntityType.DATASET, "CIFAR-10") for d in "def"
+    ]
+    scores = _related_scores("abcdef")
+    kg, _, _, titles = build(entities, scores)
     gaps = discover_gaps(kg, entities, scores, {}, title_index=titles)
 
     descriptions = " ".join(g.description for g in gaps)
@@ -99,22 +108,73 @@ def test_absent_pairing_between_established_concepts_is_found():
     assert "CIFAR-10" in descriptions
 
 
-def test_pairing_that_already_co_occurs_is_not_a_gap():
+def test_absent_pairing_is_ignored_when_the_communities_are_unrelated():
+    """
+    "X was never applied to Y" is trivially true for most pairs. Without a
+    relatedness requirement the detector emitted the cross-product of everything
+    that happens not to co-occur - forty items of that shape on a 30-paper
+    corpus, all noise.
+    """
     entities = [
-        entity("a", EntityType.METHODOLOGY, "contrastive learning"),
-        entity("a", EntityType.DATASET, "CIFAR-10"),
-        entity("b", EntityType.METHODOLOGY, "contrastive learning"),
-        entity("b", EntityType.DATASET, "CIFAR-10"),
+        entity(d, EntityType.METHODOLOGY, "contrastive learning") for d in "abc"
+    ] + [
+        entity(d, EntityType.DATASET, "CIFAR-10") for d in "def"
     ]
-    kg, _, scores, titles = build(entities)
+    scores = _related_scores("abcdef", value=0.05)
+    kg, _, _, titles = build(entities, scores)
     gaps = discover_gaps(kg, entities, scores, {}, title_index=titles)
 
     assert not any("No paper in the corpus applies" in g.description for g in gaps)
 
 
-def test_concept_seen_in_only_one_paper_is_not_established_enough():
+def test_concept_in_only_two_papers_is_not_established_enough():
+    entities = [
+        entity(d, EntityType.METHODOLOGY, "contrastive learning") for d in "ab"
+    ] + [
+        entity(d, EntityType.DATASET, "CIFAR-10") for d in "cd"
+    ]
+    scores = _related_scores("abcd")
+    kg, _, _, titles = build(entities, scores)
+    gaps = discover_gaps(kg, entities, scores, {}, title_index=titles)
+
+    assert not any("No paper in the corpus applies" in g.description for g in gaps)
+
+
+def test_boilerplate_statements_are_dropped():
+    """A gap with no subject helps nobody."""
+    # Built directly rather than through the helper, which pads the span.
+    boilerplate = Entity(
+        doc_id="a",
+        entity_type=EntityType.RESEARCH_GAP,
+        text="Further research is needed.",
+        section="conclusion",
+        page_number=9,
+        sentence_span="Further research is needed.",
+    )
+    kg, _, scores, titles = build([boilerplate])
+    assert discover_gaps(kg, [boilerplate], scores, {}, title_index=titles) == []
+
+
+def test_the_returned_list_stays_short():
+    """Sixty findings is a list nobody reads."""
+    entities = []
+    for i in range(40):
+        entities.append(
+            entity(f"d{i}", EntityType.RESEARCH_GAP,
+                   f"The interaction of component {i} with the surrounding system "
+                   f"remains an open problem for the field and is unexplored.",
+                   "conclusion")
+        )
+    kg, _, scores, titles = build(entities)
+    gaps = discover_gaps(kg, entities, scores, {}, title_index=titles)
+    assert len(gaps) <= 12
+
+
+def test_pairing_that_already_co_occurs_is_not_a_gap():
     entities = [
         entity("a", EntityType.METHODOLOGY, "contrastive learning"),
+        entity("a", EntityType.DATASET, "CIFAR-10"),
+        entity("b", EntityType.METHODOLOGY, "contrastive learning"),
         entity("b", EntityType.DATASET, "CIFAR-10"),
     ]
     kg, _, scores, titles = build(entities)

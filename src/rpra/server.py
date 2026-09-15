@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +48,15 @@ from rpra.pipeline import PipelineResult, run_pipeline
 
 logger = logging.getLogger("rpra.server")
 
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Seed the corpus when the service starts, before it accepts traffic."""
+    seed_corpus_if_empty()
+    yield
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="Research Paper Relationship Analyzer API",
     description=(
         "Knowledge graph construction, contradiction detection and research gap "
@@ -70,6 +80,39 @@ try:
 except Exception as exc:
     logger.warning("Could not load %s (%s); using defaults.", CONFIG_PATH, exc)
     current_settings = Settings()
+
+
+# ----------------------------------------------------------------------
+# Corpus seeding
+# ----------------------------------------------------------------------
+
+
+def seed_corpus_if_empty() -> int:
+    """
+    Give a fresh instance something to analyse.
+
+    A deployment starts with an empty corpus directory - the real one is
+    gitignored, and on hosts with an ephemeral filesystem it is wiped on every
+    restart - so the interface opens reporting zero papers and "Run analysis"
+    has nothing to do. Writing the sample corpus when the directory is empty
+    means the service works the moment it comes up.
+
+    It never overwrites papers that are already there, so an uploaded corpus is
+    safe, and it can be turned off with RPRA_SEED_CORPUS=0.
+    """
+    if os.environ.get("RPRA_SEED_CORPUS", "1").strip().lower() in {"0", "false", "no"}:
+        return 0
+
+    try:
+        from rpra.sample_corpus import seed_if_empty
+
+        written = seed_if_empty(current_settings.storage.corpus_input_path)
+        if written:
+            logger.info("Seeded sample corpus: %d papers", len(written))
+        return len(written)
+    except Exception as exc:
+        logger.warning("Could not seed the sample corpus: %s", exc)
+        return 0
 
 
 # ----------------------------------------------------------------------
@@ -594,8 +637,10 @@ async def get_entities(doc_id: str | None = None) -> list[dict[str, Any]]:
 @app.get("/api/report")
 async def download_report(fmt: str = "json") -> FileResponse:
     """Download the generated report as JSON or Markdown."""
-    if fmt not in ("json", "md"):
-        raise HTTPException(status_code=400, detail="fmt must be 'json' or 'md'.")
+    if fmt not in ("json", "md", "pdf"):
+        raise HTTPException(
+            status_code=400, detail="fmt must be 'json', 'md' or 'pdf'."
+        )
 
     output_dir = Path(current_settings.storage.output_path)
     report_file = output_dir / f"report.{fmt}"
@@ -605,7 +650,11 @@ async def download_report(fmt: str = "json") -> FileResponse:
             detail="No report available yet. Run the pipeline first.",
         )
 
-    media_type = "application/json" if fmt == "json" else "text/markdown"
+    media_type = {
+        "json": "application/json",
+        "md": "text/markdown",
+        "pdf": "application/pdf",
+    }[fmt]
     return FileResponse(report_file, media_type=media_type, filename=report_file.name)
 
 
@@ -633,6 +682,22 @@ async def update_weights(req: WeightUpdateRequest) -> dict[str, Any]:
     return {
         "message": "Weights updated. Re-run the pipeline to apply them.",
         "weights": weights.model_dump(),
+    }
+
+
+@app.post("/api/corpus/seed")
+async def seed_corpus() -> dict[str, Any]:
+    """Write the sample corpus, unless papers are already present."""
+    written = seed_corpus_if_empty()
+    corpus_dir = Path(current_settings.storage.corpus_input_path)
+    present = len(list(corpus_dir.glob("*.pdf"))) if corpus_dir.exists() else 0
+    return {
+        "seeded": written,
+        "pdf_count": present,
+        "message": (
+            f"Added {written} sample papers." if written
+            else f"Corpus already has {present} paper(s); nothing was written."
+        ),
     }
 
 

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import re
 import time
 from collections import Counter, defaultdict
 from collections.abc import Callable
@@ -52,10 +53,50 @@ _PAIRABLE_RIGHT = (EntityType.DATASET,)
 
 # A concept must appear in at least this many documents before its absence
 # elsewhere is meaningful. A term used once is not an established concept.
-_MIN_DOC_SUPPORT = 2
+# An absent pairing is only worth reporting when both halves are well
+# attested. Two papers is not an established concept; three begins to be.
+_MIN_DOC_SUPPORT = 3
 
-_MAX_ABSENT_GAPS = 40
-_MAX_GAPS_RETURNED = 60
+# "X was never applied to Y" is trivially true for most pairs of concepts and
+# is only interesting when there was some reason to expect the pairing. That
+# reason is taken to be that the two concepts' papers are themselves related:
+# if the communities using X and using Y overlap in subject matter but the
+# specific combination never occurs, the combination is a genuine missing link.
+# Without this, the detector emits the cross-product of everything that happens
+# not to co-occur - 40 items of the form "no paper applies attention mechanism
+# to MNIST", which is noise.
+_ABSENT_COMMUNITY_RELATEDNESS = 0.40
+
+# Requirement 8.2 asks for absent connections, so the detector stays - but a
+# pairing that never happened is the weakest evidence of the three kinds, so
+# only the two best-attested ones are reported.
+_MAX_ABSENT_GAPS = 2
+_MAX_STATED_GAPS = 8
+_MAX_WEAK_GAPS = 4
+
+# A findings list nobody reads is worse than a short one. Gaps are ranked by
+# importance and only the strongest are returned.
+_MAX_GAPS_RETURNED = 12
+_MIN_IMPORTANCE = 0.45
+
+# A stated gap shorter than this is boilerplate ("Further research is needed.")
+# carrying no subject.
+_MIN_STATED_CHARS = 45
+
+# A weak connection is only a finding when the shared concept is specific.
+# "'accuracy' appears in 15 papers but they are otherwise weakly related" is a
+# statement about how common a metric is, not about a research gap.
+_WEAK_CONCEPT_MAX_SPREAD = 6
+
+# Cue strength: an author reporting that nothing exists is a stronger lead than
+# one gesturing at future work.
+_STRONG_GAP_CUES = re.compile(
+    r"no\s+(?:prior|existing)\s+work|to\s+the\s+best\s+of\s+our\s+knowledge|"
+    r"remains?\s+(?:an\s+)?(?:open|unexplored|underexplored|under-explored)|"
+    r"has\s+not\s+been\s+(?:explored|investigated|studied|addressed)|"
+    r"little\s+(?:attention|work|research)|few\s+studies",
+    re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +180,62 @@ def _novelty_from_support(support: int, total_docs: int) -> float:
     return round(min(max(1.0 - coverage, 0.0), 1.0), 4)
 
 
+def _mean_pair_score(
+    docs_a: set[str], docs_b: set[str], score_index: dict[frozenset, float]
+) -> float:
+    """
+    Mean relationship score between two groups of papers.
+
+    Used to decide whether two concepts belong to the same conversation. If the
+    papers using X and the papers using Y are unrelated, the fact that X was
+    never applied to Y says nothing.
+    """
+    pairs = [
+        score_index.get(frozenset([a, b]), 0.0)
+        for a in docs_a
+        for b in docs_b
+        if a != b
+    ]
+    return sum(pairs) / len(pairs) if pairs else 0.0
+
+
+def _gap_importance(gap: ResearchGap, kind: str) -> float:
+    """
+    How much a reader should care about this gap.
+
+    Novelty alone ranks badly: a concept pairing absent from the corpus scores
+    highly on novelty precisely because nothing supports it. Importance weighs
+    novelty against how well evidenced and how specific the gap is.
+    """
+    if kind == "stated":
+        # An author stating a gap outright is the strongest evidence available.
+        score = 0.62
+        if _STRONG_GAP_CUES.search(gap.description):
+            score += 0.18
+        # Length is a crude proxy for carrying a subject rather than a gesture.
+        if len(gap.description) >= 90:
+            score += 0.08
+        if len(gap.supporting_doc_ids) > 1:
+            score += 0.06
+    elif kind == "weak":
+        # Corroborated by several papers sharing a concept and little else.
+        score = 0.42 + min(len(gap.supporting_doc_ids), 5) * 0.05
+    else:  # absent
+        score = 0.34 + min(len(gap.supporting_doc_ids), 6) * 0.03
+
+    # Evidence is what makes a finding checkable.
+    score += min(len(gap.evidence), 3) * 0.03
+    return round(min(score, 1.0), 4)
+
+
+def _classify_gap(gap: ResearchGap) -> str:
+    if "No paper in the corpus applies" in gap.description:
+        return "absent"
+    if "weakly related" in gap.description:
+        return "weak"
+    return "stated"
+
+
 # ---------------------------------------------------------------------------
 # Detectors
 # ---------------------------------------------------------------------------
@@ -153,8 +250,12 @@ def _stated_gaps(entities: list[Entity], title_index: dict[str, str]) -> list[Re
         if entity.entity_type not in (EntityType.RESEARCH_GAP, EntityType.LIMITATION):
             continue
         sentence = entity.sentence_span.strip() or entity.text.strip()
-        key = sentence.lower()[:160]
-        if not sentence or key in seen:
+        # "Further research is needed." names no subject and helps nobody.
+        if len(sentence) < _MIN_STATED_CHARS:
+            continue
+        # Near-duplicates: the same observation restated in two papers.
+        key = " ".join(sorted(sentence.lower().split()))[:170]
+        if key in seen:
             continue
         seen.add(key)
 
@@ -192,6 +293,7 @@ def _absent_pairing_gaps(
     total_docs: int,
     title_index: dict[str, str],
     display: dict[str, str],
+    score_index: dict[frozenset, float],
 ) -> list[ResearchGap]:
     """
     Find established concept pairs that never co-occur in any single paper.
@@ -214,11 +316,17 @@ def _absent_pairing_gaps(
             # Co-occurrence in any one document means the pairing has been tried.
             if left_set & right_set:
                 continue
+            # The two communities must be talking about related things, or the
+            # absence is trivial rather than telling.
+            relatedness = _mean_pair_score(left_set, right_set, score_index)
+            if relatedness < _ABSENT_COMMUNITY_RELATEDNESS:
+                continue
             novelty = _novelty_from_support(len(left_set | right_set), total_docs)
             candidates.append((novelty, left, right, left_set | right_set))
 
-    # Rank by novelty, then by how well attested both halves are.
-    candidates.sort(key=lambda c: (-c[0], -len(c[3])))
+    # Best attested first: an absent pairing between two widely used concepts
+    # is more striking than one between two rarely used ones.
+    candidates.sort(key=lambda c: (-len(c[3]), -c[0]))
 
     gaps: list[ResearchGap] = []
     for novelty, left, right, docs in candidates[:_MAX_ABSENT_GAPS]:
@@ -277,9 +385,21 @@ def _weak_connection_gaps(
 
     gaps: list[ResearchGap] = []
 
+    # Metrics are shared by nearly every paper in a field and say nothing about
+    # any particular pair, so they cannot carry a weak-connection finding.
+    generic = {
+        e.text.lower().strip()
+        for e in entities
+        if e.entity_type == EntityType.EVALUATION_METRIC
+    }
+
     for concept, doc_ids in bridge_entities.items():
         unique_docs = sorted(set(doc_ids))
         if len(unique_docs) < 2:
+            continue
+        if concept.lower().strip() in generic:
+            continue
+        if len(unique_docs) > _WEAK_CONCEPT_MAX_SPREAD:
             continue
         if _already_addressed(concept, entities):
             continue
@@ -367,14 +487,34 @@ def discover_gaps(
 
     display = _display_forms(all_entities)
 
+    score_index: dict[frozenset, float] = {
+        frozenset([s.doc_id_a, s.doc_id_b]): s.composite_score for s in scores
+    }
+
     stated = _stated_gaps(all_entities, titles)
-    absent = _absent_pairing_gaps(all_entities, total_docs, titles, display)
+    absent = _absent_pairing_gaps(
+        all_entities, total_docs, titles, display, score_index
+    )
     weak = _weak_connection_gaps(
         all_entities, scores, bridge_entities, kg,
         weak_connection_threshold, titles, display,
     )
 
-    gaps = stated + absent + weak
+    # Rank each kind on importance, keep the strongest few of each so one
+    # detector cannot crowd out the others, then apply the overall floor.
+    def rank(items: list[ResearchGap], kind: str, limit: int) -> list[ResearchGap]:
+        scored = []
+        for gap in items:
+            gap.novelty_score = _gap_importance(gap, kind)
+            scored.append(gap)
+        scored.sort(key=lambda g: g.novelty_score, reverse=True)
+        return scored[:limit]
+
+    stated = rank(stated, "stated", _MAX_STATED_GAPS)
+    absent = rank(absent, "absent", _MAX_ABSENT_GAPS)
+    weak = rank(weak, "weak", _MAX_WEAK_GAPS)
+
+    gaps = [g for g in stated + absent + weak if g.novelty_score >= _MIN_IMPORTANCE]
     gaps.sort(key=lambda g: g.novelty_score, reverse=True)
     gaps = gaps[:_MAX_GAPS_RETURNED]
 

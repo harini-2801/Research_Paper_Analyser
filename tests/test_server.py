@@ -290,7 +290,12 @@ def test_deleting_an_absent_paper_is_a_404():
 
 
 def test_report_rejects_an_unknown_format():
-    assert client.get("/api/report?fmt=pdf").status_code == 400
+    assert client.get("/api/report?fmt=docx").status_code == 400
+
+
+def test_report_accepts_pdf_as_a_format():
+    """Not 400: the format is valid, even when no report has been generated."""
+    assert client.get("/api/report?fmt=pdf").status_code != 400
 
 
 def test_index_page_is_served():
