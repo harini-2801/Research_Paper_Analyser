@@ -207,19 +207,22 @@
         <div class="toolbar">
           <div class="legend" aria-label="Graph legend">
             <span class="legend__item"><span class="legend__swatch legend__swatch--document"></span>Paper</span>
-            <span class="legend__item"><span class="legend__swatch legend__swatch--bridge"></span>Bridge concept</span>
-            <span class="legend__item"><span class="legend__swatch legend__swatch--entity"></span>Extracted entity</span>
-            <span class="legend__item" style="color:var(--ink-muted)">shape encodes entity type</span>
+            <span class="legend__item"><span class="legend__swatch legend__swatch--bridge"></span>Shared concept</span>
+            <span class="legend__item legend__item--entity"><span class="legend__swatch legend__swatch--entity"></span>Entity</span>
+            <span class="legend__item" id="legend-note" style="color:var(--ink-muted)">thicker link = more related</span>
           </div>
           <div class="toolbar__group">
             <input class="input" id="graph-search" type="search" placeholder="Filter nodes&hellip;" style="width:158px" />
-            <select class="select" id="graph-filter" style="width:168px">
-              <option value="overview" selected>Papers + bridge concepts</option>
-              <option value="all">Everything</option>
-              <option value="document">Papers only</option>
-              <option value="bridge_entity">Bridge concepts</option>
-              <option value="entity">Entities only</option>
+            <select class="select" id="graph-view" style="width:184px" title="What to draw">
+              <option value="network" selected>Paper network</option>
+              <option value="bridges">Shared concepts</option>
+              <option value="full">Everything (dense)</option>
             </select>
+            <label class="graph-threshold" id="threshold-wrap">
+              <span class="graph-threshold__label">Link strength</span>
+              <input type="range" id="graph-threshold" min="0.35" max="0.65" step="0.01" value="0.50" />
+              <span class="graph-threshold__value mono" id="threshold-value">0.50</span>
+            </label>
             <button class="btn btn--ghost" id="btn-relayout">Re-layout</button>
             <button class="btn btn--ghost" id="btn-fit">Fit</button>
               <span class="eyebrow mono" id="graph-count" style="margin-left:2px"></span>

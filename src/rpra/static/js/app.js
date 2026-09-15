@@ -21,6 +21,12 @@
   // Where the frozen demo bundle lives depends on how the page is served:
   // the FastAPI app mounts it under /static, a plain static host serves it
   // beside index.html. Try both rather than assume one.
+  // Above this spread a "bridge" concept links nearly every paper and tells
+  // you nothing about any specific pair of them.
+  var BRIDGE_MAX_SPREAD = 4;
+  // Even after dropping the hubs, every qualifying concept at once is busy.
+  var BRIDGE_MAX_SHOWN = 40;
+
   var DEMO_URLS = ["/static/demo/data.json", "./demo/data.json", "demo/data.json"];
 
   var state = {
@@ -502,7 +508,9 @@
     var muted = cssVar("--ink-muted");
     var rule = cssVar("--rule-strong");
     var surface = cssVar("--bg-page");
-    var accent = cssVar("--c-violet");
+    var accent = cssVar("--accent");
+    var rampLow = cssVar("--seq-200");
+    var rampHigh = cssVar("--seq-600");
 
     cy.style()
       .resetToDefault()
@@ -513,7 +521,7 @@
         width: 17,
         height: 17,
         label: "data(short_label)",
-        "font-size": 8,
+        "font-size": 7.5,
         "font-family": "Inter, system-ui, sans-serif",
         color: muted,
         "text-valign": "bottom",
@@ -528,15 +536,19 @@
       .style({
         "background-color": docColor,
         shape: "round-rectangle",
-        width: 52,
-        height: 30,
-        "font-size": 10,
+        // Sized by how many papers it links to, so the hubs of the literature
+        // are visible before you read a single label.
+        width: "mapData(degree, 0, 12, 56, 104)",
+        height: "mapData(degree, 0, 12, 30, 46)",
+        "font-size": 11,
         "font-weight": 700,
         color: ink,
-        "text-max-width": 140,
+        "text-max-width": 150,
         "text-wrap": "wrap",
         "text-valign": "center",
         "text-margin-y": 0,
+        "text-outline-color": surface,
+        "text-outline-width": 2.5,
         "border-width": 2,
         "border-color": docColor,
         "border-opacity": 0.45,
@@ -586,11 +598,11 @@
       .style({ "line-color": bridgeColor, opacity: 0.5, width: 1.4 })
       .selector('edge[edge_type = "relationship_score"]')
       .style({
-        "line-color": accent,
-        // Edge thickness carries the composite score, so the strongest
-        // relationships read first.
-        width: "mapData(composite_score, 0, 1, 0.6, 6)",
-        opacity: 0.75,
+        "line-color": "mapData(composite_score, 0.3, 0.7, " + rampLow + ", " + rampHigh + ")",
+        // Width and opacity both carry the score, so the strongest links read
+        // first even at low zoom.
+        width: "mapData(composite_score, 0.3, 0.7, 1, 9)",
+        opacity: "mapData(composite_score, 0.3, 0.7, 0.35, 0.95)",
         "curve-style": "straight",
       })
       .selector('edge[edge_type = "cites"]')
@@ -618,40 +630,116 @@
       .update();
   }
 
+  /**
+   * Build the elements for a view.
+   *
+   * Drawing the whole graph at once is what made it unreadable: 1219 nodes,
+   * and the concepts that connect the most papers - "accuracy", "transformer" -
+   * are hubs that drag every paper into one ball. Each view answers a different
+   * question and draws only what that question needs.
+   */
+  function buildElements(view, threshold) {
+    var all = state.graph.nodes || [];
+    var edges = state.graph.edges || [];
+    var docs = all.filter(function (n) { return n.data.node_type === "document"; });
+
+    if (view === "full") {
+      return { nodes: all, edges: edges };
+    }
+
+    if (view === "network") {
+      // How are these papers related? Papers only, linked where the composite
+      // score clears the threshold, plus any direct citations between them.
+      var keptEdges = edges.filter(function (e) {
+        var d = e.data;
+        if (d.edge_type === "cites") return true;
+        return d.edge_type === "relationship_score" &&
+          typeof d.composite_score === "number" &&
+          d.composite_score >= threshold;
+      });
+
+      var degree = {};
+      keptEdges.forEach(function (e) {
+        degree[e.data.source] = (degree[e.data.source] || 0) + 1;
+        degree[e.data.target] = (degree[e.data.target] || 0) + 1;
+      });
+
+      var sized = docs.map(function (n) {
+        return {
+          data: Object.assign({}, n.data, { degree: degree[n.data.id] || 0 }),
+        };
+      });
+      return { nodes: sized, edges: keptEdges };
+    }
+
+    // "bridges": which concepts actually link papers together?
+    // A concept shared by nearly every paper says nothing about any pair of
+    // them, so only the discriminating ones are drawn.
+    var spread = state.graph.bridge_entities || {};
+    var informative = {};
+    Object.keys(spread).forEach(function (text) {
+      var count = new Set(spread[text]).size;
+      if (count >= 2 && count <= BRIDGE_MAX_SPREAD) informative[text.toLowerCase()] = count;
+    });
+
+    var bridgeNodes = all
+      .filter(function (n) {
+        return n.data.node_type === "bridge_entity" &&
+          informative[String(n.data.label || "").toLowerCase()] !== undefined;
+      })
+      // Fewest papers first: a concept shared by two is the most telling.
+      .sort(function (a, b) {
+        return informative[String(a.data.label).toLowerCase()] -
+               informative[String(b.data.label).toLowerCase()];
+      })
+      .slice(0, BRIDGE_MAX_SHOWN);
+
+    var visible = {};
+    docs.concat(bridgeNodes).forEach(function (n) { visible[n.data.id] = true; });
+
+    var bridgeEdges = edges.filter(function (e) {
+      return e.data.edge_type === "has_bridge_entity" &&
+        visible[e.data.source] && visible[e.data.target];
+    });
+
+    return { nodes: docs.concat(bridgeNodes), edges: bridgeEdges };
+  }
+
   function renderGraph() {
     var host = $("graph-host");
     var empty = $("graph-empty");
-    var nodes = state.graph.nodes || [];
 
-    if (!nodes.length) {
+    if (!(state.graph.nodes || []).length) {
       if (empty) empty.style.display = "";
       if (state.cy) { state.cy.destroy(); state.cy = null; }
+      updateGraphCount(0, 0);
       return;
     }
     if (empty) empty.style.display = "none";
     if (state.cy) { state.cy.destroy(); state.cy = null; }
 
+    var view = $("graph-view").value;
+    var threshold = parseFloat($("graph-threshold").value);
+    var elements = buildElements(view, threshold);
+
     var cy = cytoscape({
       container: host,
-      elements: { nodes: nodes, edges: state.graph.edges || [] },
+      elements: elements,
       wheelSensitivity: 0.22,
-      minZoom: 0.12,
-      maxZoom: 3.2,
+      minZoom: 0.1,
+      maxZoom: 3.5,
     });
 
     state.cy = cy;
     applyGraphStyle(cy);
-    applyGraphFilter();
-    runLayout(cy);
+    applyGraphSearch();
+    runLayout(cy, view);
 
     cy.on("tap", "node", function (evt) {
-      var data = evt.target.data();
       highlightNeighbourhood(cy, evt.target);
-      inspectNode(data);
+      inspectNode(evt.target.data());
     });
-
     cy.on("tap", "edge", function (evt) { inspectEdge(evt.target.data()); });
-
     cy.on("tap", function (evt) {
       if (evt.target === cy) {
         cy.elements().removeClass("dimmed highlight");
@@ -659,36 +747,71 @@
       }
     });
 
-    state.cy = cy;
+    updateGraphCount(cy.nodes().length, (state.graph.nodes || []).length);
+    updateLegendNote(view);
   }
 
-  function runLayout(cy) {
-    var visible = cy.nodes().filter(function (n) { return n.style("display") !== "none"; });
-    var target = visible.length ? visible.union(visible.connectedEdges()) : cy.elements();
+  function updateGraphCount(shown, total) {
+    var counter = $("graph-count");
+    if (counter) counter.textContent = shown + " of " + total + " nodes";
+  }
 
-    // Iterations are the expensive part; a large graph gets fewer of them so
-    // the browser stays responsive.
-    var iterations = target.length > 600 ? 350 : target.length > 250 ? 600 : 1000;
+  function updateLegendNote(view) {
+    var note = $("legend-note");
+    if (!note) return;
+    if (view === "network") note.textContent = "thicker link = more related";
+    else if (view === "bridges") note.textContent =
+      "concepts shared by 2–" + BRIDGE_MAX_SPREAD + " papers only";
+    else note.textContent = "shape encodes entity type";
 
-    target.layout({
-      name: "cose",
-      animate: false,
-      nodeRepulsion: 11000,
-      idealEdgeLength: 90,
-      edgeElasticity: 120,
-      gravity: 38,
-      numIter: iterations,
-      randomize: true,
-      padding: 40,
-      nodeDimensionsIncludeLabels: true,
-    }).run();
-    cy.fit(target, 40);
+    var entityLegend = document.querySelector(".legend__item--entity");
+    if (entityLegend) entityLegend.style.display = view === "full" ? "" : "none";
+  }
+
+  function runLayout(cy, view) {
+    var count = cy.nodes().length;
+
+    if (view === "network") {
+      // Only ~30 nodes, so they can be spread generously. Edge length is
+      // inverse to the score, which puts strongly related papers side by side
+      // and lets the clusters place themselves.
+      cy.layout({
+        name: "cose",
+        animate: false,
+        randomize: true,
+        nodeRepulsion: 42000,
+        idealEdgeLength: function (edge) {
+          var score = edge.data("composite_score");
+          return typeof score === "number" ? 70 + (1 - score) * 280 : 190;
+        },
+        edgeElasticity: 160,
+        gravity: 14,
+        numIter: 1600,
+        padding: 60,
+        nodeDimensionsIncludeLabels: true,
+      }).run();
+    } else {
+      var iterations = count > 600 ? 320 : count > 250 ? 700 : 1200;
+      cy.layout({
+        name: "cose",
+        animate: false,
+        randomize: true,
+        nodeRepulsion: count > 300 ? 14000 : 26000,
+        idealEdgeLength: count > 300 ? 110 : 170,
+        edgeElasticity: 130,
+        gravity: 22,
+        numIter: iterations,
+        padding: 50,
+        nodeDimensionsIncludeLabels: true,
+      }).run();
+    }
+
+    cy.fit(undefined, 45);
   }
 
   function highlightNeighbourhood(cy, node) {
-    var neighbourhood = node.closedNeighborhood();
     cy.elements().addClass("dimmed").removeClass("highlight");
-    neighbourhood.removeClass("dimmed");
+    node.closedNeighborhood().removeClass("dimmed");
     node.addClass("highlight");
   }
 
@@ -697,44 +820,27 @@
     var node = state.cy.getElementById(nodeId);
     if (!node || !node.length) return;
     highlightNeighbourhood(state.cy, node);
-    state.cy.animate({ center: { eles: node }, zoom: 1.15 }, { duration: 320 });
+    state.cy.animate({ center: { eles: node }, zoom: 1.2 }, { duration: 320 });
   }
 
-  /**
-   * A real corpus produces well over a thousand nodes, which renders as an
-   * unreadable hairball. "overview" shows only papers and the bridge concepts
-   * that connect them - the structure a reader actually wants - and the other
-   * modes open it up.
-   */
-  function nodeMatchesMode(data, mode) {
-    if (mode === "all") return true;
-    if (mode === "overview") {
-      return data.node_type === "document" || data.node_type === "bridge_entity";
-    }
-    return data.node_type === mode;
-  }
-
-  function applyGraphFilter() {
+  /** Dim nodes that do not match the search box, rather than removing them. */
+  function applyGraphSearch() {
     if (!state.cy) return;
     var query = $("graph-search").value.trim().toLowerCase();
-    var mode = $("graph-filter").value;
-    var shown = 0;
 
     state.cy.batch(function () {
+      if (!query) {
+        state.cy.elements().removeClass("dimmed");
+        return;
+      }
+      state.cy.elements().addClass("dimmed");
       state.cy.nodes().forEach(function (node) {
-        var data = node.data();
-        var matchesQuery = !query || String(data.label || "").toLowerCase().indexOf(query) >= 0;
-        var visible = matchesQuery && nodeMatchesMode(data, mode);
-        node.style("display", visible ? "element" : "none");
-        if (visible) shown++;
+        if (String(node.data("label") || "").toLowerCase().indexOf(query) >= 0) {
+          node.removeClass("dimmed");
+          node.connectedEdges().removeClass("dimmed");
+        }
       });
     });
-
-    var counter = $("graph-count");
-    if (counter) {
-      counter.textContent = shown + " / " + state.cy.nodes().length + " nodes";
-    }
-    return shown;
   }
 
   // ------------------------------------------------------------------
@@ -1346,8 +1452,14 @@
     });
   }
 
+  function syncThresholdVisibility() {
+    var wrap = $("threshold-wrap");
+    if (wrap) wrap.style.display = $("graph-view").value === "network" ? "" : "none";
+  }
+
   function init() {
     initTheme();
+    syncThresholdVisibility();
     initTabs();
     clearInspector();
 
@@ -1464,16 +1576,22 @@
       if (evt.dataTransfer && evt.dataTransfer.files.length) uploadFiles(evt.dataTransfer.files);
     });
 
-    $("graph-search").addEventListener("input", applyGraphFilter);
-    $("graph-filter").addEventListener("change", function () {
-      applyGraphFilter();
-      if (state.cy) runLayout(state.cy);
+    $("graph-search").addEventListener("input", applyGraphSearch);
+
+    $("graph-view").addEventListener("change", function () {
+      syncThresholdVisibility();
+      renderGraph();
     });
+
+    $("graph-threshold").addEventListener("input", function () {
+      $("threshold-value").textContent = parseFloat(this.value).toFixed(2);
+    });
+    $("graph-threshold").addEventListener("change", renderGraph);
     $("btn-fit").addEventListener("click", function () {
       if (state.cy) state.cy.fit(undefined, 36);
     });
     $("btn-relayout").addEventListener("click", function () {
-      if (state.cy) runLayout(state.cy);
+      if (state.cy) runLayout(state.cy, $("graph-view").value);
     });
 
     $("chk-confirmed-only").addEventListener("change", function (evt) {

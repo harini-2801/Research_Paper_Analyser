@@ -57,7 +57,7 @@ _DATASETS: tuple[str, ...] = (
     "Amazon Reviews", "Yelp", "Reuters", "20 Newsgroups", "SemEval", "BioASQ",
     "PubMed", "MIMIC-III", "ChestX-ray14", "OpenWebText", "C4", "The Pile",
     "HotpotQA", "DROP", "RACE", "BoolQ", "AG News", "DBpedia", "Flickr30k",
-    "Visual Genome", "VQA", "SciERC", "S2ORC", "arXiv", "DocRED", "TACRED",
+    "Visual Genome", "VQA", "SciERC", "S2ORC", "DocRED", "TACRED",
 )
 
 _METRICS: tuple[str, ...] = (
@@ -103,11 +103,50 @@ _METHODOLOGY_TERMS: tuple[str, ...] = (
 )
 
 
-def _gazetteer_regex(terms: Iterable[str]) -> re.Pattern:
-    """Build one alternation regex, longest term first so `CIFAR-100` beats `CIFAR-10`."""
-    ordered = sorted(set(terms), key=len, reverse=True)
-    escaped = "|".join(re.escape(t) for t in ordered)
-    return re.compile(rf"(?<![\w-])({escaped})(?![\w-])", re.IGNORECASE)
+def _is_acronym(term: str) -> bool:
+    """
+    Short all-caps terms that collide with ordinary English when lowercased.
+
+    `mAP`, `EM`, `CER`, `WER`, `AUC` are metrics; `map`, `em`, `cer`, `wer` and
+    `auc` also occur as ordinary words or fragments. Matching those
+    case-insensitively made "we map the input" a metric mention, and `map`
+    ended up as a bridge concept linking fifteen unrelated papers.
+    """
+    if len(term) > 5 or " " in term:
+        return False
+    uppercase = sum(1 for c in term if c.isupper())
+    # Two or more capitals in a short token means it is written as an acronym -
+    # mAP, IoU, mIoU, DROP, AUC - and lowercasing it invites a collision.
+    return uppercase >= 2
+
+
+def _gazetteer_regex(terms: Iterable[str]) -> tuple[re.Pattern, re.Pattern | None]:
+    """
+    Build the alternation regexes for a gazetteer.
+
+    Returns a case-insensitive pattern for ordinary terms and a case-sensitive
+    one for acronyms, longest term first so `CIFAR-100` beats `CIFAR-10`.
+    """
+    unique = sorted(set(terms), key=len, reverse=True)
+    loose = [t for t in unique if not _is_acronym(t)]
+    strict = [t for t in unique if _is_acronym(t)]
+
+    def build(items: list[str], flags: int) -> re.Pattern | None:
+        if not items:
+            return None
+        escaped = "|".join(re.escape(t) for t in items)
+        return re.compile(rf"(?<![\w-])({escaped})(?![\w-])", flags)
+
+    return build(loose, re.IGNORECASE), build(strict, 0)
+
+
+def _gazetteer_finditer(patterns: tuple[re.Pattern, re.Pattern | None], text: str):
+    """Yield matches from both halves of a gazetteer."""
+    loose, strict = patterns
+    if loose is not None:
+        yield from loose.finditer(text)
+    if strict is not None:
+        yield from strict.finditer(text)
 
 
 _DATASET_RE = _gazetteer_regex(_DATASETS)
@@ -303,13 +342,13 @@ def extract_entities_from_segment(segment: Segment) -> list[Entity]:
             continue
 
         # --- gazetteer types (no section restriction) ----------------------
-        for match in _DATASET_RE.finditer(sentence):
+        for match in _gazetteer_finditer(_DATASET_RE, sentence):
             add(EntityType.DATASET, _normalise_surface(match.group(1)), sentence)
-        for match in _METRIC_RE.finditer(sentence):
+        for match in _gazetteer_finditer(_METRIC_RE, sentence):
             add(EntityType.EVALUATION_METRIC, _normalise_surface(match.group(1)).lower(), sentence)
-        for match in _MODEL_RE.finditer(sentence):
+        for match in _gazetteer_finditer(_MODEL_RE, sentence):
             add(EntityType.MODEL, _normalise_surface(match.group(1)), sentence)
-        for match in _METHOD_TERM_RE.finditer(sentence):
+        for match in _gazetteer_finditer(_METHOD_TERM_RE, sentence):
             add(EntityType.METHODOLOGY, _normalise_surface(match.group(1)).lower(), sentence)
 
         # --- cue-phrase types ---------------------------------------------
@@ -328,7 +367,9 @@ def extract_entities_from_segment(segment: Segment) -> list[Entity]:
         # --- numeric claims -------------------------------------------------
         # Only a metric mention plus a number counts, so plain years and section
         # numbers do not become results.
-        if _NUMERIC_RE.search(sentence) and _METRIC_RE.search(sentence):
+        if _NUMERIC_RE.search(sentence) and any(
+            True for _ in _gazetteer_finditer(_METRIC_RE, sentence)
+        ):
             add(EntityType.QUANTITATIVE_RESULT, _truncate(sentence), sentence)
 
     return found

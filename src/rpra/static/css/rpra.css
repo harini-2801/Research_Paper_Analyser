@@ -724,6 +724,27 @@ button { font: inherit; cursor: pointer; }
 .legend__swatch--bridge { background: var(--cat-bridge); transform: rotate(45deg); width: 9px; height: 9px; }
 .legend__swatch--entity { background: var(--cat-entity); border-radius: 99px; }
 
+.graph-threshold {
+  display: flex; align-items: center; gap: 7px;
+  padding: 4px 10px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  border: 1px solid var(--rule);
+}
+.graph-threshold__label {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ink-muted); white-space: nowrap;
+}
+.graph-threshold input[type="range"] { width: 92px; }
+.graph-threshold__value { font-size: 11px; color: var(--gold); min-width: 30px; }
+
+/* The graph tells you how many of the corpus's nodes are on screen, so a
+   filtered view never looks like a broken one. */
+.graph-count {
+  font-family: var(--font-mono); font-size: 10.5px;
+  color: var(--ink-muted); white-space: nowrap;
+}
+
 .graph-host { flex: 1 1 auto; min-height: 0; position: relative; }
 
 /* --------------------------------------------------------------------------
