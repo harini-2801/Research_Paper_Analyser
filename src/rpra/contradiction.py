@@ -33,6 +33,11 @@ import re
 import time
 from collections.abc import Callable
 
+from rpra.claims import (
+    analyse_claim,
+    comparable_measurements,
+    repair_spaced_decimals,
+)
 from rpra.models import (
     Contradiction,
     ContradictionStatus,
@@ -177,8 +182,11 @@ def parse_reported_values(sentence: str) -> list[float]:
     Pull reported scores out of a sentence, normalised to the 0-1 range.
 
     Percentages are divided by 100 so that "92.4%" and "0.924" compare equal.
-    Values that cannot be a score once normalised are dropped.
+    Values that cannot be a score once normalised are dropped. Decimal points
+    that PDF extraction split with spaces are rejoined first, so "82 . 9%" reads
+    as 82.9% rather than 9%.
     """
+    sentence = repair_spaced_decimals(sentence)
     values: list[float] = []
     for match in _VALUE_RE.finditer(sentence):
         percent, decimal, bare = match.groups()
@@ -236,6 +244,20 @@ def _value_polarity(sentence: str) -> tuple[float, str | None] | None:
     return best
 
 
+def _mentions_model(text: str, term: str) -> bool:
+    """
+    Whole-term match that tolerates a model-variant suffix.
+
+    Models are named by family and then specialised: ViT-B/16, ResNet-101,
+    BERT-base. For deciding *which system* a claim is about, the family is
+    what matters, so `ViT` must match `ViT-B/16`. Datasets are matched
+    strictly instead, because CIFAR-10 and CIFAR-100 genuinely differ - which
+    is why this is a separate function rather than a relaxation of the other.
+    """
+    pattern = rf"(?<![\w-]){re.escape(term)}(?:[-/][A-Za-z0-9./]+)?(?![\w])"
+    return re.search(pattern, text, re.IGNORECASE) is not None
+
+
 def _mentions(text: str, term: str) -> bool:
     """
     Whole-term containment test.
@@ -285,8 +307,8 @@ def _numeric_disagreement(
     # BLEU on WMT for two different models are not in conflict - they are simply
     # describing different things. Requiring a shared subject is what separates
     # a contradiction from a comparison.
-    models_a = {t for t in model_terms if _mentions(text_a, t)}
-    models_b = {t for t in model_terms if _mentions(text_b, t)}
+    models_a = {t for t in model_terms if _mentions_model(text_a, t)}
+    models_b = {t for t in model_terms if _mentions_model(text_b, t)}
     if models_a and models_b and not (models_a & models_b):
         return None
 
@@ -299,15 +321,6 @@ def _numeric_disagreement(
     # true finding along with the false ones. Where both do name systems, the
     # mismatch check above still applies.
 
-    # Reject inverted scales: "4.9% top-5 error" against "76.2% accuracy" is not
-    # a disagreement, it is two different quantities.
-    polar_a = _value_polarity(text_a)
-    polar_b = _value_polarity(text_b)
-    if polar_a is None or polar_b is None:
-        return None
-    if polar_a[1] and polar_b[1] and polar_a[1] != polar_b[1]:
-        return None
-
     # Both sides must assert a measured outcome rather than narrate one.
     for text in (text_a, text_b):
         if not _RESULT_ASSERTION_RE.search(text):
@@ -315,20 +328,20 @@ def _numeric_disagreement(
         if _CROSS_REFERENCE_RE.search(text):
             return None
 
-    # And they must be measuring the same thing: a shared metric named in both
-    # sentences. A shared dataset alone is not a common yardstick.
-    metrics_shared = {
-        term for term in shared
-        if term not in dataset_terms
-        and _mentions(text_a, term)
-        and _mentions(text_b, term)
-    }
-    if not metrics_shared:
-        return None
+    # Decide what each sentence actually measures, then compare like with like.
+    # This rejects setup descriptions, run-together extraction blobs, deltas,
+    # figures quoted from other papers, mismatched metrics (exact-match against
+    # F1), mismatched variants (top-1 against top-5) and mismatched regimes
+    # (linear-probe against fine-tuned).
+    facts_a = analyse_claim(text_a)
+    facts_b = analyse_claim(text_b)
 
-    # Compare the headline value on each side - papers quote their best number,
-    # and comparing maxima avoids matching an ablation row against a main result.
-    best_a, best_b = polar_a[0], polar_b[0]
+    pair = comparable_measurements(facts_a, facts_b)
+    if pair is None:
+        return None
+    measure_a, measure_b = pair
+
+    best_a, best_b = measure_a.value, measure_b.value
     denominator = max(best_a, best_b)
     if denominator == 0:
         return None
