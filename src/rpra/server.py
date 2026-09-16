@@ -100,7 +100,8 @@ def seed_corpus_if_empty() -> int:
     It never overwrites papers that are already there, so an uploaded corpus is
     safe, and it can be turned off with RPRA_SEED_CORPUS=0.
     """
-    if os.environ.get("RPRA_SEED_CORPUS", "1").strip().lower() in {"0", "false", "no"}:
+    mode = os.environ.get("RPRA_SEED_CORPUS", "sample").strip().lower()
+    if mode in {"0", "false", "no", "off", "none"}:
         return 0
 
     try:
@@ -391,6 +392,10 @@ async def get_status() -> dict[str, Any]:
         "gaps_count": summary.get("gaps", 0),
         "entities_count": summary.get("entities", 0),
         "bridge_entities_count": summary.get("bridge_entities", 0),
+        "corpus_sources": {
+            "sample": 6,
+            "arxiv": 30,
+        },
         "config": {
             "llm_provider": current_settings.llm.provider,
             "llm_model": current_settings.llm.model,
@@ -698,6 +703,84 @@ async def seed_corpus() -> dict[str, Any]:
             f"Added {written} sample papers." if written
             else f"Corpus already has {present} paper(s); nothing was written."
         ),
+    }
+
+
+@app.post("/api/corpus/fetch-arxiv")
+async def fetch_arxiv_corpus() -> dict[str, Any]:
+    """
+    Download the 30-paper arXiv evaluation corpus into the corpus directory.
+
+    Runs in the background: arXiv asks for a few seconds between requests, so
+    thirty papers take a couple of minutes. Progress is streamed over the same
+    WebSocket the pipeline uses, because a download that long with no feedback
+    is indistinguishable from a hang.
+    """
+    from rpra.arxiv_corpus import PAPERS, fetch_corpus, missing_papers
+
+    with state.lock:
+        if state.running:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Wait for the current job to finish.",
+            )
+        state.running = True
+
+    corpus_dir = Path(current_settings.storage.corpus_input_path)
+    outstanding = len(missing_papers(corpus_dir))
+    loop = asyncio.get_running_loop()
+
+    def announce(stage_status: str, message: str, details: dict) -> None:
+        payload = {
+            "type": "progress",
+            "stage": "corpus_fetch",
+            "doc_id": None,
+            "status": stage_status,
+            "message": message,
+            "details": details,
+            "elapsed_seconds": 0.0,
+        }
+        with state.lock:
+            state.events.append(payload)
+        asyncio.run_coroutine_threadsafe(manager.broadcast(payload), loop)
+
+    def worker() -> None:
+        try:
+            def report(index: int, total: int, slug: str, ok: bool) -> None:
+                announce(
+                    "running",
+                    f"{'Fetched' if ok else 'Failed'} {slug} ({index}/{total})",
+                    {"completed": index, "total": total},
+                )
+
+            manifest = fetch_corpus(corpus_dir, on_progress=report)
+            counts = manifest["counts"]
+            announce(
+                "complete",
+                (
+                    f"arXiv corpus ready: {counts['available']}/{counts['requested']} "
+                    f"papers ({counts['downloaded_this_run']} downloaded)"
+                ),
+                counts,
+            )
+        except Exception as exc:
+            logger.exception("arXiv corpus fetch failed")
+            announce("failed", f"Corpus fetch failed: {exc}", {})
+        finally:
+            with state.lock:
+                state.running = False
+
+    threading.Thread(target=worker, name="rpra-corpus-fetch", daemon=True).start()
+
+    return {
+        "message": (
+            f"Fetching {outstanding} paper(s) from arXiv. This takes a couple of "
+            "minutes; progress appears in the status bar."
+            if outstanding
+            else "All 30 papers are already present."
+        ),
+        "to_download": outstanding,
+        "total": len(PAPERS),
     }
 
 

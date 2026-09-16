@@ -122,6 +122,20 @@
 
       <div class="run-panel">
         <div class="field">
+          <label class="field__label" for="sel-corpus">Corpus</label>
+          <div style="display:flex;gap:6px">
+            <select class="select" id="sel-corpus">
+              <option value="sample">Sample &mdash; 6 papers, instant</option>
+              <option value="arxiv">arXiv &mdash; 30 real papers</option>
+            </select>
+            <button class="btn" id="btn-load-corpus" title="Load into the backend">Load</button>
+          </div>
+          <p class="hint" id="corpus-hint">
+            The arXiv set downloads 30 real papers on first use and takes a couple of minutes.
+          </p>
+        </div>
+
+        <div class="field">
           <label class="field__label" for="sel-backend">Extraction backend</label>
           <select class="select" id="sel-backend">
             <option value="auto">Auto &mdash; LLM if a key is set</option>

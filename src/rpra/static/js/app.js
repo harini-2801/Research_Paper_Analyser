@@ -47,6 +47,7 @@
   };
 
   var STAGES = [
+    "corpus_fetch",
     "ingestion", "citations", "classification", "extraction", "embedding",
     "scoring", "kg_construction", "contradiction_detection", "gap_discovery",
     "explanation", "export",
@@ -58,6 +59,7 @@
     classification: "Classifying",
     extraction: "Extracting entities",
     embedding: "Embedding",
+    corpus_fetch: "Fetching papers",
     scoring: "Scoring pairs",
     kg_construction: "Building graph",
     contradiction_detection: "Finding contradictions",
@@ -253,6 +255,12 @@
     }
     if (event.elapsed_seconds) {
       $("status-elapsed").textContent = fmt(event.elapsed_seconds, 1) + "s";
+    }
+
+    if (event.stage === "corpus_fetch" && event.status === "complete") {
+      toast(event.message, "success");
+      refreshStatus().then(renderEverything);
+      return;
     }
 
     if (event.type === "complete") {
@@ -1514,6 +1522,28 @@
       }
       window.location.href = target.toString();
     }
+
+    $("btn-load-corpus").addEventListener("click", async function () {
+      if (state.demoMode) {
+        toast("Connect a backend before loading a corpus.", "error");
+        return;
+      }
+      var which = $("sel-corpus").value;
+      var button = $("btn-load-corpus");
+      button.disabled = true;
+      try {
+        var path = which === "arxiv" ? "/api/corpus/fetch-arxiv" : "/api/corpus/seed";
+        var res = await api(path, { method: "POST" });
+        toast(res.message, "success");
+        // The arXiv fetch runs in the background and reports over the socket;
+        // the sample corpus is written synchronously and is ready now.
+        if (which !== "arxiv") refreshStatus().then(renderEverything);
+      } catch (err) {
+        toast(err.message, "error");
+      } finally {
+        button.disabled = false;
+      }
+    });
 
     $("btn-connect-api").addEventListener("click", openBackendModal);
     $("btn-close-backend").addEventListener("click", closeBackendModal);
