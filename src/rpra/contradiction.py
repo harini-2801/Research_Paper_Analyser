@@ -57,6 +57,11 @@ logger = logging.getLogger(__name__)
 _MAX_CLAIMS_PER_DOC = 8
 _MAX_PAIRS_PER_DOC_PAIR = 24
 _CANDIDATE_SCORE_THRESHOLD = 0.35
+# Keyed by model name. Loading transformers weights costs several seconds and
+# the result is identical across runs, so - like the embedding model - it is
+# shared for the life of the process instead of reloaded on every analysis.
+_NLI_MODEL_CACHE: dict[str, object] = {}
+
 # One disagreement restated across several sentences is still one finding.
 _MAX_FINDINGS_PER_DOC_PAIR = 3
 
@@ -371,15 +376,21 @@ def load_nli_pipeline(model_name: str):
     A missing model is not fatal: the numeric detector still runs, so the stage
     degrades rather than returning nothing.
     """
+    cached = _NLI_MODEL_CACHE.get(model_name)
+    if cached is not None:
+        return cached
+
     try:
         from transformers import pipeline as hf_pipeline
 
-        return hf_pipeline(
+        nli_pipe = hf_pipeline(
             "text-classification",
             model=model_name,
             top_k=None,
             device=-1,
         )
+        _NLI_MODEL_CACHE[model_name] = nli_pipe
+        return nli_pipe
     except Exception as exc:
         logger.warning(
             "NLI model '%s' unavailable (%s). "
@@ -390,28 +401,8 @@ def load_nli_pipeline(model_name: str):
         return None
 
 
-def _run_nli(premise: str, hypothesis: str, nli_pipeline) -> tuple[NLILabel, float]:
-    """
-    Classify the stance of *hypothesis* with respect to *premise*.
-
-    A cross-encoder needs the two sentences as a genuine pair; concatenating
-    them into one string makes the model score a single malformed sequence and
-    return meaningless labels.
-    """
-    if nli_pipeline is None:
-        return NLILabel.NEUTRAL, 0.0
-
-    try:
-        result = nli_pipeline(
-            {"text": premise, "text_pair": hypothesis},
-            truncation=True,
-            max_length=512,
-        )
-    except Exception as exc:
-        logger.warning("NLI inference failed: %s", exc)
-        return NLILabel.NEUTRAL, 0.0
-
-    items = result
+def _interpret_nli_result(items) -> tuple[NLILabel, float]:
+    """Turn one pipeline result (a list of {label, score} dicts) into a verdict."""
     if isinstance(items, list) and items and isinstance(items[0], list):
         items = items[0]
     if not isinstance(items, list) or not items:
@@ -426,6 +417,62 @@ def _run_nli(premise: str, hypothesis: str, nli_pipeline) -> tuple[NLILabel, flo
     if "ENTAIL" in raw_label:
         return NLILabel.ENTAILMENT, score
     return NLILabel.NEUTRAL, score
+
+
+def _run_nli(premise: str, hypothesis: str, nli_pipeline) -> tuple[NLILabel, float]:
+    """
+    Classify the stance of *hypothesis* with respect to *premise*.
+
+    A cross-encoder needs the two sentences as a genuine pair; concatenating
+    them into one string makes the model score a single malformed sequence and
+    return meaningless labels. Prefer :func:`_run_nli_batch` for more than a
+    couple of pairs - calling a transformers pipeline one pair at a time pays
+    its per-call overhead on every single claim comparison, which is what made
+    contradiction detection with NLI enabled take minutes instead of seconds.
+    """
+    if nli_pipeline is None:
+        return NLILabel.NEUTRAL, 0.0
+
+    try:
+        result = nli_pipeline(
+            {"text": premise, "text_pair": hypothesis},
+            truncation=True,
+            max_length=512,
+        )
+    except Exception as exc:
+        logger.warning("NLI inference failed: %s", exc)
+        return NLILabel.NEUTRAL, 0.0
+
+    return _interpret_nli_result(result)
+
+
+def _run_nli_batch(
+    pairs: list[tuple[str, str]], nli_pipeline
+) -> list[tuple[NLILabel, float]]:
+    """
+    Classify every (premise, hypothesis) pair in one batched pass.
+
+    A transformers pipeline batches internally when given a list, which is far
+    cheaper per pair than a Python-level loop of single calls - the fixed
+    per-call cost (tokenization, dispatch) is paid once for the whole list
+    instead of once per claim pair, and this stage compares dozens to hundreds
+    of pairs on a real corpus.
+    """
+    if nli_pipeline is None or not pairs:
+        return [(NLILabel.NEUTRAL, 0.0)] * len(pairs)
+
+    try:
+        results = nli_pipeline(
+            [{"text": p, "text_pair": h} for p, h in pairs],
+            truncation=True,
+            max_length=512,
+            batch_size=32,
+        )
+    except Exception as exc:
+        logger.warning("Batched NLI inference failed: %s", exc)
+        return [(NLILabel.NEUTRAL, 0.0)] * len(pairs)
+
+    return [_interpret_nli_result(item) for item in results]
 
 
 # ---------------------------------------------------------------------------
@@ -515,8 +562,9 @@ def detect_contradictions(
         )
     )
 
-    contradictions: list[Contradiction] = []
-
+    # Pass 1: gather every claim pair worth comparing, and the numeric verdict
+    # for each, without touching the NLI model yet.
+    pending: list[dict] = []
     for doc_a, doc_b in sorted(candidate_pairs):
         ents_a = entity_index.get(doc_a, [])
         ents_b = entity_index.get(doc_b, [])
@@ -534,6 +582,8 @@ def detect_contradictions(
 
         compared = 0
         for claim_a in claims_a:
+            if compared >= _MAX_PAIRS_PER_DOC_PAIR:
+                break
             for claim_b in claims_b:
                 if compared >= _MAX_PAIRS_PER_DOC_PAIR:
                     break
@@ -541,80 +591,108 @@ def detect_contradictions(
                     continue
                 compared += 1
 
-                label = NLILabel.NEUTRAL
-                confidence = 0.0
-                source = ""
-
                 # Numeric comparison first: it is cheap and more reliable than
                 # NLI on sentences dense with figures.
                 numeric_conf = _numeric_disagreement(
                     claim_a, claim_b, shared, dataset_terms, model_terms
                 )
-                if numeric_conf is not None:
-                    label = NLILabel.CONTRADICTION
-                    confidence = numeric_conf
-                    source = "numeric"
-
-                if nli_pipe is not None:
-                    nli_label, nli_conf = _run_nli(
-                        claim_a.sentence_span, claim_b.sentence_span, nli_pipe
-                    )
-                    if nli_label == NLILabel.CONTRADICTION and nli_conf > confidence:
-                        label = NLILabel.CONTRADICTION
-                        confidence = nli_conf
-                        source = "numeric+nli" if numeric_conf is not None else "nli"
-                    elif nli_label == NLILabel.ENTAILMENT and numeric_conf is None:
-                        continue
-
-                if label != NLILabel.CONTRADICTION or confidence < 0.4:
-                    continue
-
-                if (
-                    confidence >= nli_confidence_threshold
-                    and (ds_compat or met_compat)
-                    and meth_sim >= methodology_similarity_threshold
-                ):
-                    status = ContradictionStatus.CONFIRMED
-                else:
-                    status = ContradictionStatus.UNCONFIRMED
-
-                contradictions.append(
-                    Contradiction(
-                        doc_id_a=doc_a,
-                        doc_id_b=doc_b,
-                        claim_a=claim_a.text,
-                        claim_b=claim_b.text,
-                        nli_label=label,
-                        nli_confidence=round(confidence, 4),
-                        dataset_compatible=ds_compat,
-                        metrics_comparable=met_compat,
-                        methodology_similarity=round(meth_sim, 4),
-                        status=status,
-                        confidence=round(confidence, 4),
-                        evidence=[
-                            EvidenceTrail(
-                                source_doc_id=claim_a.doc_id,
-                                source_doc_title=title_index.get(claim_a.doc_id, ""),
-                                section=claim_a.section,
-                                page_number=claim_a.page_number,
-                                sentence_span=claim_a.sentence_span,
-                            ),
-                            EvidenceTrail(
-                                source_doc_id=claim_b.doc_id,
-                                source_doc_title=title_index.get(claim_b.doc_id, ""),
-                                section=claim_b.section,
-                                page_number=claim_b.page_number,
-                                sentence_span=claim_b.sentence_span,
-                            ),
-                        ],
-                        explanation=(
-                            f"Detected by {source} comparison over shared terms: "
-                            f"{', '.join(sorted(shared)) or 'none'}."
-                        ),
-                    )
+                pending.append(
+                    {
+                        "doc_a": doc_a,
+                        "doc_b": doc_b,
+                        "claim_a": claim_a,
+                        "claim_b": claim_b,
+                        "ds_compat": ds_compat,
+                        "met_compat": met_compat,
+                        "shared": shared,
+                        "meth_sim": meth_sim,
+                        "numeric_conf": numeric_conf,
+                    }
                 )
-            if compared >= _MAX_PAIRS_PER_DOC_PAIR:
-                break
+
+    # Pass 2: one batched NLI call for every pending pair, instead of one
+    # transformers-pipeline call per pair. This is the change that turns
+    # minutes of per-pair overhead into a handful of forward passes.
+    if nli_pipe is not None and pending:
+        nli_results = _run_nli_batch(
+            [(item["claim_a"].sentence_span, item["claim_b"].sentence_span) for item in pending],
+            nli_pipe,
+        )
+    else:
+        nli_results = [(NLILabel.NEUTRAL, 0.0)] * len(pending)
+
+    # Pass 3: combine the numeric and NLI verdicts exactly as the single-pass
+    # version did, and build the findings.
+    contradictions: list[Contradiction] = []
+    for item, (nli_label, nli_conf) in zip(pending, nli_results):
+        claim_a, claim_b = item["claim_a"], item["claim_b"]
+        numeric_conf = item["numeric_conf"]
+
+        label = NLILabel.NEUTRAL
+        confidence = 0.0
+        source = ""
+
+        if numeric_conf is not None:
+            label = NLILabel.CONTRADICTION
+            confidence = numeric_conf
+            source = "numeric"
+
+        if nli_pipe is not None:
+            if nli_label == NLILabel.CONTRADICTION and nli_conf > confidence:
+                label = NLILabel.CONTRADICTION
+                confidence = nli_conf
+                source = "numeric+nli" if numeric_conf is not None else "nli"
+            elif nli_label == NLILabel.ENTAILMENT and numeric_conf is None:
+                continue
+
+        if label != NLILabel.CONTRADICTION or confidence < 0.4:
+            continue
+
+        if (
+            confidence >= nli_confidence_threshold
+            and (item["ds_compat"] or item["met_compat"])
+            and item["meth_sim"] >= methodology_similarity_threshold
+        ):
+            status = ContradictionStatus.CONFIRMED
+        else:
+            status = ContradictionStatus.UNCONFIRMED
+
+        shared = item["shared"]
+        contradictions.append(
+            Contradiction(
+                doc_id_a=item["doc_a"],
+                doc_id_b=item["doc_b"],
+                claim_a=claim_a.text,
+                claim_b=claim_b.text,
+                nli_label=label,
+                nli_confidence=round(confidence, 4),
+                dataset_compatible=item["ds_compat"],
+                metrics_comparable=item["met_compat"],
+                methodology_similarity=round(item["meth_sim"], 4),
+                status=status,
+                confidence=round(confidence, 4),
+                evidence=[
+                    EvidenceTrail(
+                        source_doc_id=claim_a.doc_id,
+                        source_doc_title=title_index.get(claim_a.doc_id, ""),
+                        section=claim_a.section,
+                        page_number=claim_a.page_number,
+                        sentence_span=claim_a.sentence_span,
+                    ),
+                    EvidenceTrail(
+                        source_doc_id=claim_b.doc_id,
+                        source_doc_title=title_index.get(claim_b.doc_id, ""),
+                        section=claim_b.section,
+                        page_number=claim_b.page_number,
+                        sentence_span=claim_b.sentence_span,
+                    ),
+                ],
+                explanation=(
+                    f"Detected by {source} comparison over shared terms: "
+                    f"{', '.join(sorted(shared)) or 'none'}."
+                ),
+            )
+        )
 
     contradictions.sort(key=lambda c: c.confidence, reverse=True)
 
