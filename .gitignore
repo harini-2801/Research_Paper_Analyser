@@ -17,9 +17,13 @@ env/
 .env
 *.env
 
-# Output / data (don't commit generated artefacts or raw PDFs)
+# Output / working data (generated artefacts and the runtime corpus directory)
 output/
 data/
+
+# dataset/ is deliberately NOT ignored: it is the 30-paper evaluation corpus
+# the project is measured on, and a benchmark nobody can obtain is not a
+# benchmark. See dataset/README.md for provenance and licensing.
 
 # Pytest / coverage
 .pytest_cache/
