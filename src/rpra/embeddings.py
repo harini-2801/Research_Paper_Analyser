@@ -60,6 +60,10 @@ _STOPWORDS: frozenset[str] = frozenset(
 )
 
 _FALLBACK_DIM = 256
+
+# Keyed by (model_name, device). Loading weights is the single most expensive
+# step in a run and the result never changes, so it is shared process-wide.
+_MODEL_CACHE: dict[tuple[str, str], object] = {}
 _PROJECTION_SEED = 20260915
 
 
@@ -98,7 +102,7 @@ class EmbeddingBackend:
         self,
         model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
         device: str = "cpu",
-        batch_size: int = 32,
+        batch_size: int = 128,
         prefer_transformer: bool = True,
     ) -> None:
         self.model_name = model_name
@@ -125,9 +129,18 @@ class EmbeddingBackend:
         try:
             from sentence_transformers import SentenceTransformer
 
-            self._model = SentenceTransformer(self.model_name, device=self.device)
+            # Loading the model costs ~14s and dominates a short run, but the
+            # weights are immutable and identical for every run in a process.
+            # The server runs analyses repeatedly, so paying that once instead
+            # of per-run is most of the difference between a 55s and a 20s run.
+            key = (self.model_name, self.device)
+            model = _MODEL_CACHE.get(key)
+            if model is None:
+                model = SentenceTransformer(self.model_name, device=self.device)
+                _MODEL_CACHE[key] = model
+                logger.info("Embedding backend: sentence-transformers (%s)", self.model_name)
+            self._model = model
             self.kind = "sentence-transformers"
-            logger.info("Embedding backend: sentence-transformers (%s)", self.model_name)
         except Exception as exc:
             logger.warning(
                 "Could not load embedding model '%s' (%s). "
@@ -232,16 +245,39 @@ class EmbeddingBackend:
             return np.zeros((0, self.dimension), dtype=np.float32)
 
         if self._model is not None:
-            vectors = self._model.encode(
-                list(texts),
-                batch_size=self.batch_size,
-                convert_to_numpy=True,
-                show_progress_bar=False,
-                normalize_embeddings=True,
-            )
-            return np.asarray(vectors, dtype=np.float32)
+            return self._encode_transformer(list(texts))
 
         return _l2_normalise(self._encode_tfidf(texts))
+
+    def _encode_transformer(self, texts: list[str]) -> np.ndarray:
+        """
+        Encode with the transformer, avoiding work the input makes unnecessary.
+
+        Two effects, both large on a real corpus:
+
+        A batch is padded to its longest member, so a 400-character sentence
+        batched with twenty 30-character ones makes every one of them cost 400
+        characters of attention. Encoding in length order puts similar lengths
+        together and cuts the padding waste dramatically.
+
+        Entities also repeat - the same term in the same sentence is extracted
+        once per mention - so identical strings are encoded once and the result
+        is shared.
+        """
+        unique = list(dict.fromkeys(texts))
+        order = sorted(range(len(unique)), key=lambda i: len(unique[i]))
+
+        vectors = self._model.encode(
+            [unique[i] for i in order],
+            batch_size=self.batch_size,
+            convert_to_numpy=True,
+            show_progress_bar=False,
+            normalize_embeddings=True,
+        )
+        vectors = np.asarray(vectors, dtype=np.float32)
+
+        lookup = {unique[src]: vectors[row] for row, src in enumerate(order)}
+        return np.vstack([lookup[t] for t in texts]).astype(np.float32)
 
     def encode_one(self, text: str) -> list[float]:
         """Encode a single string and return it as a plain list."""
@@ -278,7 +314,7 @@ def embed_entities(
     documents: list[Document] | None = None,
     model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
     device: str = "cpu",
-    batch_size: int = 32,
+    batch_size: int = 128,
     prefer_transformer: bool = True,
     backend: EmbeddingBackend | None = None,
     on_progress: Callable[[ProgressEvent], None] | None = None,

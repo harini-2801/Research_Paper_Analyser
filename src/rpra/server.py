@@ -49,10 +49,41 @@ from rpra.pipeline import PipelineResult, run_pipeline
 logger = logging.getLogger("rpra.server")
 
 
+def _warm_embedding_model() -> None:
+    """
+    Load the sentence-transformer weights before anyone asks for an analysis.
+
+    The load costs about fourteen seconds and is cached for the life of the
+    process, so it happens either during startup - while the user is still
+    reading the page - or inside their first "Run analysis", where it is a
+    third of the wait and looks like the pipeline being slow. Doing it here
+    moves that cost somewhere nobody is waiting on it.
+
+    Best-effort by design: if the model cannot be loaded, embedding falls back
+    to TF-IDF on its own and the run proceeds, so a failure here is not worth
+    reporting, let alone worth failing startup over.
+    """
+    def load() -> None:
+        try:
+            from rpra.embeddings import EmbeddingBackend
+
+            backend = EmbeddingBackend(
+                model_name=current_settings.embedding.model,
+                device=current_settings.embedding.device,
+                batch_size=current_settings.embedding.batch_size,
+            )
+            logger.info("Embedding model warmed (backend=%s)", backend.kind)
+        except Exception as exc:
+            logger.debug("Could not warm the embedding model: %s", exc)
+
+    threading.Thread(target=load, name="rpra-warm-embeddings", daemon=True).start()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """Seed the corpus when the service starts, before it accepts traffic."""
+    """Seed the corpus and warm the model before the service takes traffic."""
     seed_corpus_if_empty(asyncio.get_running_loop())
+    _warm_embedding_model()
     yield
 
 

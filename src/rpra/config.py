@@ -30,7 +30,7 @@ class LLMConfig(BaseModel):
 class EmbeddingConfig(BaseModel):
     model: str = "sentence-transformers/all-MiniLM-L6-v2"
     device: Literal["cpu", "cuda", "mps"] = "cpu"
-    batch_size: int = Field(32, ge=1)
+    batch_size: int = Field(128, ge=1)
 
 
 class NLIConfig(BaseModel):
