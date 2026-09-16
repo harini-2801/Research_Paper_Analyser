@@ -597,69 +597,121 @@ button { font: inherit; cursor: pointer; }
 
 .canvas { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
-/* ---- Figures: index cards with a ruled head ---- */
+/* ---- Figures: a manuscript "table of figures", not a stat-card grid ----
+   One continuous ruled panel divided by hairlines, each cell numbered like a
+   figure caption (Fig. I-V), with a large watermark glyph bleeding off the
+   corner. The academic framing - and the fact that it is one object, not five
+   separate floating cards - is the point of difference from a typical
+   dashboard KPI row. */
 
 .figures {
   flex: 0 0 auto;
+  position: relative;
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 10px;
-  padding: 13px var(--gutter);
+  margin: 13px var(--gutter) 13px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+  overflow: hidden;
+}
+
+/* Faint ruled-manuscript texture, echoing the backdrop's blueprint grid. */
+.figures::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(var(--rule-hairline) 1px, transparent 1px) 0 0 / 100% 17px;
+  opacity: 0.6;
+  pointer-events: none;
 }
 
 .figure {
   position: relative;
-  padding: 12px 14px 13px;
-  border-radius: var(--radius-lg);
-  background: var(--surface-1);
-  border: 1px solid var(--rule);
-  overflow: hidden;
-  transition: transform 0.18s ease, border-color 0.18s ease;
+  padding: 15px 17px 13px;
   min-width: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--rule);
+  transition: background 0.2s ease;
 }
-.figure:hover { transform: translateY(-2px); border-color: var(--rule-strong); }
+.figure:last-child { border-right: none; }
+.figure:hover { background: var(--figure-tint, var(--surface-2)); }
 
-.figure::before {
-  content: "";
+.figure--papers { --figure-tint: rgba(224, 163, 74, 0.07); --figure-solid: var(--gold); }
+.figure--graph { --figure-tint: rgba(59, 130, 246, 0.07); --figure-solid: var(--cat-document); }
+.figure--bridges { --figure-tint: rgba(232, 105, 15, 0.07); --figure-solid: var(--cat-bridge); }
+.figure--contradictions { --figure-tint: rgba(251, 113, 133, 0.07); --figure-solid: var(--status-critical); }
+.figure--gaps { --figure-tint: rgba(13, 159, 110, 0.07); --figure-solid: var(--cat-entity); }
+
+/* A large, near-invisible glyph bleeding off the corner - depth and texture
+   without competing with the number for attention. */
+.figure__watermark {
   position: absolute;
-  inset: 0 0 auto 0;
-  height: 3px;
-  background: var(--figure-accent, var(--grad-brand));
+  right: -16px;
+  bottom: -18px;
+  width: 92px;
+  height: 92px;
+  color: var(--figure-solid, var(--gold));
+  opacity: 0.13;
+  pointer-events: none;
+  transition: opacity 0.22s ease, transform 0.22s ease;
 }
-
-.figure--papers { --figure-accent: linear-gradient(90deg, #e0a34a, #f3cc85); }
-.figure--graph { --figure-accent: linear-gradient(90deg, #3b82f6, #7590f3); }
-.figure--bridges { --figure-accent: linear-gradient(90deg, #e8690f, #f0a35f); }
-.figure--contradictions { --figure-accent: linear-gradient(90deg, #fb7185, #f0688d); }
-.figure--gaps { --figure-accent: linear-gradient(90deg, #0d9f6e, #34d399); }
+.figure:hover .figure__watermark { opacity: 0.22; transform: scale(1.08) rotate(-4deg); }
 
 .figure__head {
-  display: flex; align-items: center; gap: 6px;
-  margin-bottom: 4px;
+  display: flex; align-items: flex-start; gap: 6px;
+  /* Reserved for two lines, so every cell's number starts at the same
+     baseline whether its label needs to wrap or not. */
+  min-height: 25px;
+  margin-bottom: 6px;
 }
-.figure__icon { width: 13px; height: 13px; flex: none; color: var(--ink-muted); }
-.figure--papers .figure__icon { color: var(--gold); }
-.figure--graph .figure__icon { color: var(--cat-document); }
-.figure--bridges .figure__icon { color: var(--cat-bridge); }
-.figure--contradictions .figure__icon { color: var(--status-critical); }
-.figure--gaps .figure__icon { color: var(--cat-entity); }
+.figure__icon { width: 13px; height: 13px; flex: none; color: var(--figure-solid, var(--ink-muted)); margin-top: 1px; }
 
 .figure__label {
-  font-size: 9.5px; font-weight: 700; letter-spacing: 0.13em;
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.11em;
   text-transform: uppercase; color: var(--ink-muted);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  line-height: 1.25;
+  /* Longer labels ("Bridge concepts", "Contradictions") wrap rather than
+     truncate - an ellipsis on a summary figure hides the thing it is
+     supposed to be labelling. */
+  white-space: normal;
 }
 .figure__value {
+  position: relative;
   font-family: var(--font-display);
-  font-size: 28px; font-weight: 800; line-height: 1.05;
+  font-size: 31px; font-weight: 800; line-height: 1.02;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.03em;
   color: var(--paper);
 }
 :root[data-theme="light"] .figure__value { color: var(--ink-primary); }
 
+/* The caption line: a static "Fig. N" marker (immune to the live-updating
+   note text next to it) followed by the note itself - the same way a paper
+   numbers and captions its own figures. */
+.figure__caption {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  margin-top: 3px;
+  padding-top: 5px;
+  border-top: 1px solid var(--rule-hairline);
+  min-width: 0;
+}
+
+.figure__index {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--figure-solid, var(--gold));
+  opacity: 0.85;
+}
+
 .figure__note {
-  font-size: 10.5px; color: var(--ink-muted); font-family: var(--font-mono);
+  min-width: 0;
+  font-size: 10px; color: var(--ink-muted); font-family: var(--font-mono);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
@@ -1141,12 +1193,17 @@ input[type="range"] { width: 100%; accent-color: var(--gold); }
 @media (max-width: 1360px) {
   .workspace { grid-template-columns: 228px minmax(0, 1fr) 300px; }
   .figures { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .figure:nth-child(3) { border-right: none; }
+  .figure:nth-child(n+4) { border-top: 1px solid var(--rule); }
 }
 
 @media (max-width: 1040px) {
   .workspace { grid-template-columns: minmax(0, 1fr); }
   .rail, .inspector { display: none; }
   .figures { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .figure:nth-child(3) { border-right: 1px solid var(--rule); }
+  .figure:nth-child(2n) { border-right: none; }
+  .figure:nth-child(n+3) { border-top: 1px solid var(--rule); }
   .masthead__sub { display: none; }
 }
 

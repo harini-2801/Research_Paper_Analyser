@@ -159,32 +159,40 @@
     <!-- ---------- CANVAS ---------- -->
     <main class="canvas">
 
-      <!-- Figures: plain numbers, no chart - a single value needs no plot -->
+      <!-- A table of figures, not a KPI row: each cell is numbered like a
+           caption (Fig. I-V) and carries a large near-invisible watermark
+           glyph, so the summary reads as part of the analysis rather than as
+           a bolted-on app dashboard. -->
       <section class="figures" aria-label="Corpus summary">
         <div class="figure figure--papers">
+          <svg class="figure__watermark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
           <span class="figure__head"><svg class="figure__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><span class="figure__label">Papers</span></span>
           <span class="figure__value num" id="fig-papers">0</span>
-          <span class="figure__note" id="fig-papers-note">none ingested</span>
+          <span class="figure__caption"><span class="figure__index">Fig. I</span><span class="figure__note" id="fig-papers-note">none ingested</span></span>
         </div>
         <div class="figure figure--graph">
+          <svg class="figure__watermark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="5" r="2.4"/><circle cx="5" cy="19" r="2.4"/><circle cx="19" cy="19" r="2.4"/><path d="M12 7.4 6.2 16.7M12 7.4l5.8 9.3M7.4 19h9.2"/></svg>
           <span class="figure__head"><svg class="figure__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="2.4"/><circle cx="5" cy="19" r="2.4"/><circle cx="19" cy="19" r="2.4"/><path d="M12 7.4 6.2 16.7M12 7.4l5.8 9.3M7.4 19h9.2"/></svg><span class="figure__label">Graph</span></span>
           <span class="figure__value num" id="fig-nodes">0</span>
-          <span class="figure__note" id="fig-nodes-note">0 edges</span>
+          <span class="figure__caption"><span class="figure__index">Fig. II</span><span class="figure__note" id="fig-nodes-note">0 edges</span></span>
         </div>
         <div class="figure figure--bridges">
+          <svg class="figure__watermark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18V9a8 8 0 0 1 16 0v9M4 14h16M9 18v-4M15 18v-4"/></svg>
           <span class="figure__head"><svg class="figure__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18V9a8 8 0 0 1 16 0v9M4 14h16M9 18v-4M15 18v-4"/></svg><span class="figure__label">Bridge concepts</span></span>
           <span class="figure__value num" id="fig-bridges">0</span>
-          <span class="figure__note" id="fig-bridges-note">shared across papers</span>
+          <span class="figure__caption"><span class="figure__index">Fig. III</span><span class="figure__note" id="fig-bridges-note">shared across papers</span></span>
         </div>
         <div class="figure figure--contradictions">
+          <svg class="figure__watermark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/></svg>
           <span class="figure__head"><svg class="figure__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/></svg><span class="figure__label">Contradictions</span></span>
           <span class="figure__value num" id="fig-contradictions">0</span>
-          <span class="figure__note" id="fig-contradictions-note">0 confirmed</span>
+          <span class="figure__caption"><span class="figure__index">Fig. IV</span><span class="figure__note" id="fig-contradictions-note">0 confirmed</span></span>
         </div>
         <div class="figure figure--gaps">
+          <svg class="figure__watermark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg>
           <span class="figure__head"><svg class="figure__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg><span class="figure__label">Research gaps</span></span>
           <span class="figure__value num" id="fig-gaps">0</span>
-          <span class="figure__note" id="fig-gaps-note">novelty ranked</span>
+          <span class="figure__caption"><span class="figure__index">Fig. V</span><span class="figure__note" id="fig-gaps-note">novelty ranked</span></span>
         </div>
       </section>
 
