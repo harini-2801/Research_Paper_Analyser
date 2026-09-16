@@ -69,15 +69,19 @@ _ABSENT_COMMUNITY_RELATEDNESS = 0.40
 
 # Requirement 8.2 asks for absent connections, so the detector stays - but a
 # pairing that never happened is the weakest evidence of the three kinds, so
-# only the two best-attested ones are reported.
-_MAX_ABSENT_GAPS = 2
+# only the best-attested one is even a candidate for the final list.
+_MAX_ABSENT_GAPS = 1
 _MAX_STATED_GAPS = 8
-_MAX_WEAK_GAPS = 4
+_MAX_WEAK_GAPS = 2
 
-# A findings list nobody reads is worse than a short one. Gaps are ranked by
-# importance and only the strongest are returned.
-_MAX_GAPS_RETURNED = 12
-_MIN_IMPORTANCE = 0.45
+# A findings list nobody reads is worse than a short one - five gaps a reader
+# will actually look at beats sixty they will skim past. Gaps are ranked by
+# importance (evidence, specificity, whether an author states it outright) and
+# only the strongest survive; the importance floor is set high enough that a
+# speculative "absent pairing" gap (which scores well under this) only appears
+# when nothing better-evidenced was found at all.
+_MAX_GAPS_RETURNED = 5
+_MIN_IMPORTANCE = 0.60
 
 # A stated gap shorter than this is boilerplate ("Further research is needed.")
 # carrying no subject.
@@ -221,7 +225,11 @@ def _gap_importance(gap: ResearchGap, kind: str) -> float:
         # Corroborated by several papers sharing a concept and little else.
         score = 0.42 + min(len(gap.supporting_doc_ids), 5) * 0.05
     else:  # absent
-        score = 0.34 + min(len(gap.supporting_doc_ids), 6) * 0.03
+        # Both concept communities are required to have at least three papers
+        # each with no overlap, so a valid candidate's union is always >= 6 -
+        # this reaches the importance floor for every legitimate candidate
+        # rather than filtering the whole detector out by construction.
+        score = 0.37 + min(len(gap.supporting_doc_ids), 6) * 0.03
 
     # Evidence is what makes a finding checkable.
     score += min(len(gap.evidence), 3) * 0.03

@@ -189,6 +189,36 @@ def test_pairing_that_already_co_occurs_is_not_a_gap():
 
 
 def test_shared_concept_with_weak_relationship_is_a_gap():
+    """
+    A weak connection with substantial support (several papers, not just two)
+    clears the importance floor and is reported. The bar is deliberately high:
+    only five gaps are returned in total, so a thin two-paper signal should not
+    crowd out gaps with stronger evidence.
+    """
+    doc_ids = ["a", "b", "c", "d", "e"]
+    entities = [entity(d, EntityType.DATASET, "CIFAR-10") for d in doc_ids]
+    scores = [
+        RelationshipScore(doc_id_a=x, doc_id_b=y, composite_score=0.04)
+        for i, x in enumerate(doc_ids)
+        for y in doc_ids[i + 1:]
+    ]
+    kg, _, _, titles = build(entities, scores, {"cifar-10": doc_ids})
+
+    gaps = discover_gaps(
+        kg, entities, scores, {"cifar-10": doc_ids},
+        weak_connection_threshold=0.2, title_index=titles,
+    )
+    weak = [g for g in gaps if "weakly related" in g.description]
+    assert weak
+    assert set(weak[0].supporting_doc_ids) == set(doc_ids)
+
+
+def test_a_thinly_supported_weak_connection_does_not_crowd_the_top_five():
+    """
+    Only two papers sharing a concept, with nothing else to go on, is the
+    weakest kind of signal - it must not consume one of the five slots when the
+    evidence for it is this thin.
+    """
     entities = [
         entity("a", EntityType.DATASET, "CIFAR-10"),
         entity("b", EntityType.DATASET, "CIFAR-10"),
@@ -200,9 +230,7 @@ def test_shared_concept_with_weak_relationship_is_a_gap():
         kg, entities, scores, {"cifar-10": ["a", "b"]},
         weak_connection_threshold=0.2, title_index=titles,
     )
-    weak = [g for g in gaps if "weakly related" in g.description]
-    assert weak
-    assert weak[0].supporting_doc_ids == ["a", "b"]
+    assert not any("weakly related" in g.description for g in gaps)
 
 
 def test_strongly_related_papers_are_not_a_weak_connection():
