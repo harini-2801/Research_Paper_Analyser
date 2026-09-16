@@ -413,6 +413,11 @@ def build_pdf(paper: dict, out_dir: Path) -> Path:
 
 
 
+def known_slugs() -> set[str]:
+    """Filenames (without extension) this module writes, for cross-cleanup."""
+    return {paper["id"] for paper in PAPERS}
+
+
 def build_corpus(out_dir: str | Path) -> list[Path]:
     """Write the full sample corpus to *out_dir* and return the paths."""
     out_dir = Path(out_dir)

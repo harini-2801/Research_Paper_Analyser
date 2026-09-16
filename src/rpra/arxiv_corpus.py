@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import time
 import urllib.error
 import urllib.request
@@ -127,25 +128,48 @@ CLUSTER_NAMES = {
 }
 
 
+def known_slugs() -> set[str]:
+    """Filenames (without extension) this module writes, for cross-cleanup."""
+    return {paper["slug"] for paper in PAPERS}
+
+
 # ---------------------------------------------------------------------------
 # Download
 # ---------------------------------------------------------------------------
-
-
-
-CLUSTER_NAMES = {
-    "A": "Convolutional image classification",
-    "B": "Pretrained language models",
-    "C": "Vision transformers and self-supervised vision",
-    "D": "Retrieval, information extraction and knowledge graphs",
-}
 
 
 def _is_complete(path: Path) -> bool:
     return path.exists() and path.stat().st_size > _MIN_PDF_BYTES
 
 
-def download_paper(arxiv_id: str, destination: Path) -> tuple[bool, str]:
+def local_dataset_dir() -> Path | None:
+    """
+    The checked-in copy of the corpus, if this is running from the repository.
+
+    Downloading thirty papers takes about two minutes and needs arXiv to be
+    reachable, which makes a first run look broken on a slow connection and
+    impossible offline. When the repository's own `dataset/papers` directory is
+    present it is used as the source instead, so loading the full corpus is a
+    file copy.
+    """
+    candidate = Path(__file__).resolve().parents[2] / "dataset" / "papers"
+    return candidate if candidate.is_dir() else None
+
+
+def _copy_from_local_dataset(slug: str, destination: Path) -> bool:
+    """Satisfy one paper from the bundled dataset. False if it is not there."""
+    source_dir = local_dataset_dir()
+    if source_dir is None:
+        return False
+    source = source_dir / f"{slug}.pdf"
+    if not _is_complete(source):
+        return False
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination)
+    return True
+
+
+def download_paper(arxiv_id: str, destination: Path, slug: str | None = None) -> tuple[bool, str]:
     """
     Fetch one PDF, skipping anything already on disk.
 
@@ -154,6 +178,9 @@ def download_paper(arxiv_id: str, destination: Path) -> tuple[bool, str]:
     """
     if _is_complete(destination):
         return True, "cached"
+
+    if slug and _copy_from_local_dataset(slug, destination):
+        return True, "from bundled dataset"
 
     request = urllib.request.Request(
         PDF_URL.format(arxiv_id=arxiv_id), headers={"User-Agent": USER_AGENT}
@@ -175,9 +202,15 @@ def download_paper(arxiv_id: str, destination: Path) -> tuple[bool, str]:
 
 
 def missing_papers(out_dir: str | Path) -> list[dict]:
-    """Which papers are not yet on disk."""
+    """Which papers still need fetching over the network."""
     out_dir = Path(out_dir)
-    return [p for p in PAPERS if not _is_complete(out_dir / f"{p['slug']}.pdf")]
+    source_dir = local_dataset_dir()
+    return [
+        p
+        for p in PAPERS
+        if not _is_complete(out_dir / f"{p['slug']}.pdf")
+        and not (source_dir and _is_complete(source_dir / f"{p['slug']}.pdf"))
+    ]
 
 
 def fetch_corpus(
@@ -203,7 +236,7 @@ def fetch_corpus(
         target = out_dir / f"{paper['slug']}.pdf"
         was_cached = _is_complete(target)
 
-        ok, message = download_paper(paper["id"], target)
+        ok, message = download_paper(paper["id"], target, slug=paper["slug"])
         if ok:
             succeeded.append({**paper, "file": target.name})
         else:
@@ -216,7 +249,7 @@ def fetch_corpus(
         # Only pause after a real request; cached papers cost nothing.
         if ok and not was_cached:
             downloaded += 1
-            if index < len(PAPERS):
+            if message != "from bundled dataset" and index < len(PAPERS):
                 time.sleep(delay_seconds)
 
     manifest = {

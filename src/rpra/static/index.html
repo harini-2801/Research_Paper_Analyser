@@ -126,12 +126,16 @@
           <div style="display:flex;gap:6px">
             <select class="select" id="sel-corpus">
               <option value="sample">Sample &mdash; 6 papers, instant</option>
-              <option value="arxiv">arXiv &mdash; 30 real papers</option>
+              <option value="arxiv" selected>arXiv &mdash; 30 real papers</option>
             </select>
-            <button class="btn" id="btn-load-corpus" title="Load into the backend">Load</button>
+            <button class="btn btn--primary" id="btn-load-corpus" title="Replace the corpus with the selected set">
+              Load 30
+            </button>
           </div>
           <p class="hint" id="corpus-hint">
-            The arXiv set downloads 30 real papers on first use and takes a couple of minutes.
+            Loading replaces whatever corpus is there now with exactly the selected set - it
+            does not mix the two. The arXiv set is fetched fresh on first use and takes a
+            couple of minutes; after that it is cached on the backend.
           </p>
         </div>
 

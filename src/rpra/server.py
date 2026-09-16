@@ -48,10 +48,11 @@ from rpra.pipeline import PipelineResult, run_pipeline
 
 logger = logging.getLogger("rpra.server")
 
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     """Seed the corpus when the service starts, before it accepts traffic."""
-    seed_corpus_if_empty()
+    seed_corpus_if_empty(asyncio.get_running_loop())
     yield
 
 
@@ -87,33 +88,92 @@ except Exception as exc:
 # ----------------------------------------------------------------------
 
 
-def seed_corpus_if_empty() -> int:
+def seed_corpus_if_empty(loop: asyncio.AbstractEventLoop | None = None) -> int:
     """
     Give a fresh instance something to analyse.
 
     A deployment starts with an empty corpus directory - the real one is
-    gitignored, and on hosts with an ephemeral filesystem it is wiped on every
-    restart - so the interface opens reporting zero papers and "Run analysis"
-    has nothing to do. Writing the sample corpus when the directory is empty
-    means the service works the moment it comes up.
+    gitignored, and on hosts with an ephemeral filesystem (Render's free tier
+    among them) it is wiped every time the instance restarts, which on a free
+    plan means after every ~15 minutes of inactivity. Without this, the
+    interface opens reporting zero papers and "Run analysis" has nothing to
+    do - and just as importantly, a corpus loaded by hand in a previous
+    session (the 30-paper arXiv set, say) silently reverts to empty on the
+    next cold start with no indication why.
 
-    It never overwrites papers that are already there, so an uploaded corpus is
-    safe, and it can be turned off with RPRA_SEED_CORPUS=0.
+    RPRA_SEED_CORPUS controls what gets restored. It defaults to "arxiv" when
+    the repository's bundled `dataset/papers` directory is present - there is no
+    reason to open on 6 synthetic papers when 30 real ones are sitting on disk
+    and cost a file copy - and to "sample" otherwise, so a deployment without
+    the dataset still has something to analyse.
+
+      "sample" - the 6-paper synthetic corpus, written instantly.
+      "arxiv"            - the 30-paper evaluation corpus. This is a two-minute
+                            network fetch, so it is kicked off in a background
+                            thread rather than awaited here: blocking startup
+                            on it would fail the platform's health check, and
+                            every restart would look like a failed deploy.
+      "0" / "false" / "no" / "off" / "none" - do not seed at all.
+
+    Never overwrites papers that are already there (of either curated set or a
+    user's own uploads), so switching this on is always safe to leave set.
     """
-    mode = os.environ.get("RPRA_SEED_CORPUS", "sample").strip().lower()
+    from rpra.arxiv_corpus import local_dataset_dir
+
+    default_mode = "arxiv" if local_dataset_dir() else "sample"
+    mode = os.environ.get("RPRA_SEED_CORPUS", default_mode).strip().lower()
     if mode in {"0", "false", "no", "off", "none"}:
         return 0
+
+    corpus_dir = Path(current_settings.storage.corpus_input_path)
+    already_has_papers = corpus_dir.exists() and any(corpus_dir.glob("*.pdf"))
+
+    if mode == "arxiv":
+        if already_has_papers:
+            return 0
+        if loop is None:
+            logger.warning(
+                "RPRA_SEED_CORPUS=arxiv needs a running event loop; "
+                "falling back to the sample corpus for this start."
+            )
+        else:
+            outstanding = _launch_arxiv_fetch(corpus_dir, loop)
+            logger.info(
+                "Fetching the arXiv corpus in the background on startup "
+                "(%d paper(s) outstanding)", outstanding,
+            )
+            return 0
 
     try:
         from rpra.sample_corpus import seed_if_empty
 
-        written = seed_if_empty(current_settings.storage.corpus_input_path)
+        written = seed_if_empty(corpus_dir)
         if written:
             logger.info("Seeded sample corpus: %d papers", len(written))
         return len(written)
     except Exception as exc:
         logger.warning("Could not seed the sample corpus: %s", exc)
         return 0
+
+
+def _purge_known(corpus_dir: Path, slugs: set[str]) -> int:
+    """
+    Remove PDFs whose filename stem is in *slugs*.
+
+    Used when the interface switches which of the two curated demo corpora is
+    loaded, so "Load" always means "replace with exactly this set" rather than
+    "add to whatever is already there". Only filenames from the other curated
+    set are ever touched - a paper a user uploaded under an arbitrary name is
+    never removed by switching between sample and arXiv.
+    """
+    if not corpus_dir.exists():
+        return 0
+    removed = 0
+    for pdf in corpus_dir.glob("*.pdf"):
+        if pdf.stem in slugs:
+            pdf.unlink()
+            removed += 1
+    return removed
 
 
 # ----------------------------------------------------------------------
@@ -170,6 +230,24 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+
+def _safe_broadcast(loop: asyncio.AbstractEventLoop, payload: dict) -> None:
+    """
+    Fire a progress payload at connected clients, never raising.
+
+    Broadcasting is best-effort: nobody may be listening, and the event loop
+    can be mid-shutdown during a fast restart. It must never propagate into a
+    worker thread, because the thread is doing the real work - downloading
+    papers, running the pipeline - and a failed status message is not a reason
+    to abandon it. This previously could raise, and since the error handlers
+    also broadcast, a single bad send raised a second, unhandled exception
+    straight out of the thread.
+    """
+    try:
+        asyncio.run_coroutine_threadsafe(manager.broadcast(payload), loop)
+    except Exception as exc:
+        logger.debug("Could not broadcast progress: %s", exc)
 
 
 # ----------------------------------------------------------------------
@@ -493,7 +571,7 @@ async def trigger_pipeline(request: RunRequest) -> dict[str, Any]:
         }
         with state.lock:
             state.events.append(payload)
-        asyncio.run_coroutine_threadsafe(manager.broadcast(payload), loop)
+        _safe_broadcast(loop, payload)
 
     def worker() -> None:
         try:
@@ -528,7 +606,7 @@ async def trigger_pipeline(request: RunRequest) -> dict[str, Any]:
             with state.lock:
                 state.running = False
 
-        asyncio.run_coroutine_threadsafe(manager.broadcast(payload), loop)
+        _safe_broadcast(loop, payload)
 
     threading.Thread(target=worker, name="rpra-pipeline", daemon=True).start()
 
@@ -692,43 +770,64 @@ async def update_weights(req: WeightUpdateRequest) -> dict[str, Any]:
 
 @app.post("/api/corpus/seed")
 async def seed_corpus() -> dict[str, Any]:
-    """Write the sample corpus, unless papers are already present."""
-    written = seed_corpus_if_empty()
+    """
+    Switch the corpus to the 6-paper sample set.
+
+    Treated as an explicit "load this instead", not "add if missing": any
+    arXiv papers left over from a previous switch are removed first, so the
+    corpus always ends up as exactly the sample set rather than a mixture of
+    both. A user's own uploads, under their own filenames, are never touched.
+    """
+    from rpra.arxiv_corpus import known_slugs as arxiv_known_slugs
+    from rpra.sample_corpus import build_corpus
+
     corpus_dir = Path(current_settings.storage.corpus_input_path)
-    present = len(list(corpus_dir.glob("*.pdf"))) if corpus_dir.exists() else 0
+    corpus_dir.mkdir(parents=True, exist_ok=True)
+    removed = _purge_known(corpus_dir, arxiv_known_slugs())
+    written = build_corpus(corpus_dir)
+
+    present = len(list(corpus_dir.glob("*.pdf")))
     return {
-        "seeded": written,
+        "seeded": len(written),
+        "removed": removed,
         "pdf_count": present,
-        "message": (
-            f"Added {written} sample papers." if written
-            else f"Corpus already has {present} paper(s); nothing was written."
-        ),
+        "message": f"Loaded the {len(written)}-paper sample corpus.",
     }
 
 
-@app.post("/api/corpus/fetch-arxiv")
-async def fetch_arxiv_corpus() -> dict[str, Any]:
+def _launch_arxiv_fetch(corpus_dir: Path, loop: asyncio.AbstractEventLoop) -> int:
     """
-    Download the 30-paper arXiv evaluation corpus into the corpus directory.
+    Start a background download of the 30-paper arXiv corpus.
 
-    Runs in the background: arXiv asks for a few seconds between requests, so
-    thirty papers take a couple of minutes. Progress is streamed over the same
-    WebSocket the pipeline uses, because a download that long with no feedback
-    is indistinguishable from a hang.
+    Shared between the explicit `/api/corpus/fetch-arxiv` endpoint and the
+    startup hook (`RPRA_SEED_CORPUS=arxiv`), so a fresh instance can converge
+    on the full evaluation corpus automatically without ever blocking startup
+    on a two-minute network fetch. Progress streams over the same WebSocket
+    the pipeline uses, because a download this long with no feedback is
+    indistinguishable from a hang. Returns the number of papers still missing.
+
+    Claims the state.running flag itself. It used to be the caller's job, and
+    the HTTP endpoint did it but the startup hook did not - so an auto-seeded
+    instance reported itself idle while the download was still running, and the
+    interface settled on however many papers happened to be on disk at that
+    instant (usually one) instead of waiting for all thirty.
     """
-    from rpra.arxiv_corpus import PAPERS, fetch_corpus, missing_papers
+    from rpra.arxiv_corpus import fetch_corpus, missing_papers
+    from rpra.sample_corpus import known_slugs as sample_known_slugs
+
+    corpus_dir.mkdir(parents=True, exist_ok=True)
+
+    # This is a switch, not an add: remove the 6 sample papers if switching
+    # away from them, so the corpus does not silently end up as 36 mixed
+    # papers instead of exactly the 30 requested.
+    removed = _purge_known(corpus_dir, sample_known_slugs())
+    if removed:
+        logger.info("Removed %d sample paper(s) before loading the arXiv corpus", removed)
+
+    outstanding = len(missing_papers(corpus_dir))
 
     with state.lock:
-        if state.running:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Wait for the current job to finish.",
-            )
         state.running = True
-
-    corpus_dir = Path(current_settings.storage.corpus_input_path)
-    outstanding = len(missing_papers(corpus_dir))
-    loop = asyncio.get_running_loop()
 
     def announce(stage_status: str, message: str, details: dict) -> None:
         payload = {
@@ -742,7 +841,7 @@ async def fetch_arxiv_corpus() -> dict[str, Any]:
         }
         with state.lock:
             state.events.append(payload)
-        asyncio.run_coroutine_threadsafe(manager.broadcast(payload), loop)
+        _safe_broadcast(loop, payload)
 
     def worker() -> None:
         try:
@@ -771,14 +870,45 @@ async def fetch_arxiv_corpus() -> dict[str, Any]:
                 state.running = False
 
     threading.Thread(target=worker, name="rpra-corpus-fetch", daemon=True).start()
+    return outstanding
 
-    return {
-        "message": (
+
+@app.post("/api/corpus/fetch-arxiv")
+async def fetch_arxiv_corpus() -> dict[str, Any]:
+    """
+    Download the 30-paper arXiv evaluation corpus into the corpus directory.
+
+    Runs in the background: arXiv asks for a few seconds between requests, so
+    thirty papers take a couple of minutes. Progress is streamed over the same
+    WebSocket the pipeline uses, because a download that long with no feedback
+    is indistinguishable from a hang.
+    """
+    with state.lock:
+        if state.running:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Wait for the current job to finish.",
+            )
+
+    from rpra.arxiv_corpus import PAPERS
+
+    corpus_dir = Path(current_settings.storage.corpus_input_path)
+    # What still has to come over the network, which is what makes this slow.
+    # It is not the same as what is missing from the corpus directory: a paper
+    # held in the bundled dataset is absent here but costs only a file copy.
+    loop = asyncio.get_running_loop()
+    outstanding = _launch_arxiv_fetch(corpus_dir, loop)
+
+    if outstanding:
+        message = (
             f"Fetching {outstanding} paper(s) from arXiv. This takes a couple of "
             "minutes; progress appears in the status bar."
-            if outstanding
-            else "All 30 papers are already present."
-        ),
+        )
+    else:
+        message = f"Loading all {len(PAPERS)} papers from the bundled dataset."
+
+    return {
+        "message": message,
         "to_download": outstanding,
         "total": len(PAPERS),
     }

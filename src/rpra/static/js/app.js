@@ -1523,6 +1523,18 @@
       window.location.href = target.toString();
     }
 
+    /**
+     * Keep the button's label in sync with the dropdown so "Load" never reads
+     * as a no-op or an ambiguous action - the confusion this caused before was
+     * clicking Load while "Sample" was still selected, expecting the arXiv set.
+     */
+    function syncCorpusButtonLabel() {
+      var which = $("sel-corpus").value;
+      $("btn-load-corpus").textContent = which === "arxiv" ? "Load 30" : "Load 6";
+    }
+    $("sel-corpus").addEventListener("change", syncCorpusButtonLabel);
+    syncCorpusButtonLabel();
+
     $("btn-load-corpus").addEventListener("click", async function () {
       if (state.demoMode) {
         toast("Connect a backend before loading a corpus.", "error");
@@ -1536,7 +1548,7 @@
         var res = await api(path, { method: "POST" });
         toast(res.message, "success");
         // The arXiv fetch runs in the background and reports over the socket;
-        // the sample corpus is written synchronously and is ready now.
+        // the sample corpus is replaced synchronously and is ready now.
         if (which !== "arxiv") refreshStatus().then(renderEverything);
       } catch (err) {
         toast(err.message, "error");
