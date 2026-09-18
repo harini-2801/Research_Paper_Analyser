@@ -62,6 +62,13 @@ _CANDIDATE_SCORE_THRESHOLD = 0.35
 # shared for the life of the process instead of reloaded on every analysis.
 _NLI_MODEL_CACHE: dict[str, object] = {}
 
+# A batch is a single tensor allocation, so these two bound peak memory.
+# Claim spans are truncated to 400 characters upstream, so a premise/hypothesis
+# pair is around 200 tokens - 256 covers it without paying for padding out to
+# the model's 512 limit, which halves the allocation for no loss of input.
+_NLI_BATCH_SIZE = 16
+_NLI_MAX_TOKENS = 256
+
 # One disagreement restated across several sentences is still one finding.
 _MAX_FINDINGS_PER_DOC_PAIR = 3
 
@@ -450,29 +457,45 @@ def _run_nli_batch(
     pairs: list[tuple[str, str]], nli_pipeline
 ) -> list[tuple[NLILabel, float]]:
     """
-    Classify every (premise, hypothesis) pair in one batched pass.
+    Classify every (premise, hypothesis) pair, batching the model calls.
 
     A transformers pipeline batches internally when given a list, which is far
     cheaper per pair than a Python-level loop of single calls - the fixed
-    per-call cost (tokenization, dispatch) is paid once for the whole list
-    instead of once per claim pair, and this stage compares dozens to hundreds
-    of pairs on a real corpus.
+    per-call cost (tokenization, dispatch) is paid once per batch instead of
+    once per claim pair, and this stage compares dozens to hundreds of pairs on
+    a real corpus.
+
+    The work is split into chunks rather than sent as one list, because a batch
+    is one big tensor allocation and this model has been observed to exhaust CPU
+    memory on a loaded machine. Sending everything at once would mean a single
+    allocation failure silently downgraded *every* pair to neutral; per chunk,
+    a failure costs only that chunk, and even then each of its pairs is retried
+    individually before being given up on.
     """
     if nli_pipeline is None or not pairs:
         return [(NLILabel.NEUTRAL, 0.0)] * len(pairs)
 
-    try:
-        results = nli_pipeline(
-            [{"text": p, "text_pair": h} for p, h in pairs],
-            truncation=True,
-            max_length=512,
-            batch_size=32,
-        )
-    except Exception as exc:
-        logger.warning("Batched NLI inference failed: %s", exc)
-        return [(NLILabel.NEUTRAL, 0.0)] * len(pairs)
+    verdicts: list[tuple[NLILabel, float]] = []
+    for start in range(0, len(pairs), _NLI_BATCH_SIZE):
+        chunk = pairs[start : start + _NLI_BATCH_SIZE]
+        try:
+            results = nli_pipeline(
+                [{"text": p, "text_pair": h} for p, h in chunk],
+                truncation=True,
+                max_length=_NLI_MAX_TOKENS,
+                batch_size=_NLI_BATCH_SIZE,
+            )
+            verdicts.extend(_interpret_nli_result(item) for item in results)
+        except Exception as exc:
+            logger.warning(
+                "Batched NLI inference failed for %d pair(s) (%s); "
+                "retrying them individually.",
+                len(chunk),
+                exc,
+            )
+            verdicts.extend(_run_nli(premise, hyp, nli_pipeline) for premise, hyp in chunk)
 
-    return [_interpret_nli_result(item) for item in results]
+    return verdicts
 
 
 # ---------------------------------------------------------------------------
