@@ -1,0 +1,617 @@
+"""
+The conference paper's text, held apart from the two templates that render it.
+
+The same manuscript is submitted to two venues with incompatible house styles
+(AIP Conference Proceedings numbers nothing and centres its headings in capitals;
+Springer LNCS numbers everything and puts table captions above the table). Keeping
+the prose here, and the formatting in the renderers, means a correction to the text
+lands in both files instead of in whichever one was edited last.
+
+Blocks are ``(kind, payload)``. The renderers map *kind* onto whatever paragraph
+style the template of the moment happens to call it.
+"""
+
+from __future__ import annotations
+
+TITLE = (
+    "A Multi-Dimensional Knowledge Graph Framework for Relationship Analysis, "
+    "Contradiction Detection and Research Gap Discovery in Scientific Literature"
+)
+
+SHORT_TITLE = "A Knowledge Graph Framework for Scientific Literature Analysis"
+
+AUTHORS = [
+    {
+        "name": "AUTHOR ONE",
+        "affil": 1,
+        "email": "a",
+        "orcid": "0000-0000-0000-0000",
+    },
+]
+
+AFFILIATIONS = [
+    "DEPARTMENT, INSTITUTION NAME, CITY, POSTAL CODE, COUNTRY.",
+]
+
+EMAILS = [("a", "Corresponding author: your.email@institution.edu")]
+
+KEYWORDS = (
+    "Knowledge graphs, Scientific literature mining, Information extraction, "
+    "Contradiction detection, Research gap discovery, Document similarity"
+)
+
+ABSTRACT = (
+    "Reading a new subfield means holding thirty papers in mind at once, and the "
+    "things a researcher most needs to know are rarely stated in any one of them: "
+    "which papers are really addressing the same question, where two groups report "
+    "different numbers for what appears to be the same experiment, and what the "
+    "collection as a whole has never examined. We present a pipeline that recovers "
+    "these cross-document relationships automatically and, importantly, makes every "
+    "answer traceable to the sentence that produced it. Papers are segmented by "
+    "relative font size rather than by matching heading text, which survives the "
+    "layout variation of real PDFs; typed entities are extracted by rule; and each "
+    "pair of documents is scored on five interpretable dimensions whose weights sum "
+    "to one, so a score can always be decomposed. Disagreements are found by "
+    "comparing reported measurements and by natural language inference, and are "
+    "confirmed only when the two papers are methodologically comparable. On a corpus "
+    "of thirty arXiv papers arranged in four topical clusters, segmentation succeeded "
+    "on all thirty documents and recovered 90% of expected sections; relationship "
+    "ranking reached 80% precision@10 against a 23% random baseline. Contradiction "
+    "detection returned no false positives on this corpus, though it also returned no "
+    "confirmed contradictions, and we examine why. The system requires no language "
+    "model API and runs offline."
+)
+
+BODY = [
+    # ------------------------------------------------------------------
+    ("h1", "Introduction"),
+
+    ("p1", (
+        "A researcher entering an unfamiliar subfield reads somewhere between twenty "
+        "and forty papers before its structure becomes clear to them. Much of what "
+        "they learn along the way is not written down in any of those papers. It "
+        "exists only in the relationships between them."
+    )),
+    ("p", (
+        "Four of these relationships matter more than the rest. The first is simple "
+        "relatedness, which is harder than keyword overlap suggests: two groups can "
+        "attack an identical problem in vocabulary that shares almost nothing, while "
+        "two papers stuffed with the same terminology turn out to be unrelated. The "
+        "second is disagreement. When one paper reports 76.4% top-1 accuracy for a "
+        "baseline and another reports 71.1% for what appears to be the same "
+        "architecture on the same dataset, that discrepancy is a fact about the "
+        "literature, and it is invisible unless both numbers are in view "
+        "simultaneously. The third is absence. A research gap is defined by what is "
+        "missing, and no amount of careful reading of what is present will reveal it; "
+        "the whole collection has to be surveyed before the hole becomes visible. The "
+        "fourth is structure, the mental map that an experienced reader of a field "
+        "carries around, which is a graph whether or not anyone draws it."
+    )),
+    ("p", (
+        "Large language models can be asked about all four, and they will answer "
+        "fluently. The difficulty is that the answer arrives without provenance. A "
+        "reviewer cannot check it, a student cannot learn from it, and a wrong answer "
+        "is indistinguishable in tone from a right one. We took the opposite approach. "
+        "Every number this system produces decomposes into named components, and every "
+        "contradiction and gap it reports carries the document, section, page and exact "
+        "sentence that gave rise to it. A language model appears in the pipeline only "
+        "at the end, and only to phrase findings that have already been established by "
+        "other means."
+    )),
+    ("p", "Our contributions are as follows."),
+    ("bullet", (
+        "A segmentation method for research PDFs built on relative font size, with a "
+        "guaranteed fallback, which recovered structure from all thirty documents in "
+        "our evaluation corpus."
+    )),
+    ("bullet", (
+        "A five-dimensional relationship score with weights constrained to sum to one, "
+        "which keeps the composite interpretable and lets any ranking be re-derived "
+        "under different assumptions."
+    )),
+    ("bullet", (
+        "A two-detector approach to contradiction detection, combining numeric "
+        "comparison of reported measurements with natural language inference, gated by "
+        "a methodological comparability test."
+    )),
+    ("bullet", (
+        "An evaluation corpus of thirty arXiv papers deliberately structured into four "
+        "clusters so that both true positives and negative controls exist by "
+        "construction, released with the system."
+    )),
+
+    # ------------------------------------------------------------------
+    ("h1", "Related Work"),
+
+    ("h2", "Document representation for scientific text"),
+    ("p1", (
+        "Sentence-BERT [1] made dense sentence embeddings cheap enough to compute over "
+        "a whole corpus, and SciBERT [2] showed that pretraining on scientific text "
+        "rather than general web text improves nearly every downstream task in this "
+        "domain. SPECTER [3] is closest in spirit to our scoring component: it learns "
+        "document-level representations using the citation graph as a training signal, "
+        "so that papers citing one another land near each other in vector space. These "
+        "methods produce a single vector per document. That is their strength for "
+        "retrieval and their weakness for our purpose, because a single number "
+        "expressing how close two papers are cannot say whether they are close because "
+        "they share a dataset, a method, or an objective. We keep the dimensions "
+        "separate for exactly that reason."
+    )),
+
+    ("h2", "Information extraction from papers"),
+    ("p1", (
+        "SciERC [4] annotates scientific abstracts with entities and relations and "
+        "trains a multi-task model over them, and DocRED [5] extends relation "
+        "extraction to the document level where most relations in practice live. Both "
+        "require supervision we do not have for the entity types we care about, and "
+        "both operate on text that someone has already segmented. We found that the "
+        "segmentation step, which these papers reasonably treat as solved, was the "
+        "single largest source of failure in our own system."
+    )),
+
+    ("h2", "Claim verification and contradiction"),
+    ("p1", (
+        "FEVER [6] established the task of verifying a claim against retrieved "
+        "evidence, and SciFact [7] adapted it to scientific abstracts, labelling claims "
+        "as supported, refuted or lacking information. These are supervised tasks with "
+        "annotated claim-evidence pairs. Our setting is harder in one respect and "
+        "easier in another: we have no labels, but we also do not need to verify a "
+        "claim against the world, only to notice when two papers in the same collection "
+        "cannot both be right. Natural language inference models trained on MultiNLI "
+        "[8] transfer reasonably to this, which is why DeBERTa [9] appears in our "
+        "pipeline, but on sentences dense with figures they are unreliable, and a "
+        "numeric comparison is both cheaper and more trustworthy."
+    )),
+
+    ("h2", "Citation analysis"),
+    ("p1", (
+        "Bibliographic coupling [10] and co-citation [11] predate all of the above by "
+        "several decades and remain useful. Two papers that cite the same prior work "
+        "are related even when they share no vocabulary at all, which is precisely the "
+        "signal that embedding-based similarity misses. We include it as one of our "
+        "five dimensions, though at a lower weight, for reasons discussed in Section 3."
+    )),
+
+    # ------------------------------------------------------------------
+    ("h1", "Method"),
+
+    ("p1", (
+        "The pipeline runs eleven stages in a fixed order. The ordering is forced by "
+        "data dependency rather than chosen: three of the five scoring dimensions are "
+        "cosine similarities between entity vectors, so embedding has to complete "
+        "before scoring begins. We learned this the hard way. In an early version the "
+        "embedding stage silently failed, and because a missing vector yields a "
+        "similarity of zero rather than an error, the composite score quietly collapsed "
+        "to its dataset-overlap term while continuing to produce plausible-looking "
+        "output."
+    )),
+
+    ("h2", "Recovering document structure"),
+    ("p1", (
+        "A PDF stores positioned glyphs and nothing about sections. Recovering the "
+        "structure turned out to be the hardest part of this work, and it is worth "
+        "describing the attempts that failed, since the obvious approaches all do."
+    )),
+    ("p", (
+        "Matching heading text against a list of section names fails because authors "
+        "do not agree on the names: Background, Prior Work, Literature Review and "
+        "Related Literature all denote the same section. Looking for bold text fails "
+        "because headings in many templates are not bold. Looking for short lines fails "
+        "badly in two-column layouts, where every line is short. Our first working "
+        "version combined these heuristics and produced zero sections on one paper in "
+        "the corpus and one hundred and eighty-six on another, from identical code."
+    )),
+    ("p", (
+        "What does work is relative font size. We compute the body text size for each "
+        "document individually as the character-weighted mode of font sizes on the "
+        "page, which came to 10.0pt for most papers in our corpus. Any line set "
+        "noticeably larger, typically 12.0pt, becomes a heading candidate. Because the "
+        "threshold is relative to the document rather than absolute, it transfers "
+        "across publishers with different house styles. Candidates are then matched "
+        "against anchored patterns covering the synonym sets above, after repairing a "
+        "common extraction artefact in which small-capital headings emerge with a space "
+        "after the first letter, so that I NTRODUCTION must be read as INTRODUCTION."
+    )),
+    ("p", (
+        "No document is discarded. When heading detection finds nothing at all, the "
+        "paper is divided into three-page chunks labelled as unstructured body text and "
+        "continues through every subsequent stage. Which route a document took is "
+        "recorded on the document itself, so a degraded result is visible rather than "
+        "silent."
+    )),
+
+    ("h2", "Entity extraction and the missing-section problem"),
+    ("p1", (
+        "Entities are extracted by rule: gazetteers for datasets, metrics and model "
+        "names, and cue-phrase patterns for objectives, limitations and explicitly "
+        "stated gaps. A sentence containing both a metric mention and a number becomes "
+        "a quantitative result. This needs no training data and no API key, which was a "
+        "design requirement rather than a convenience, since the system must run on "
+        "unpublished manuscripts that cannot be sent to a third party."
+    )),
+    ("p", (
+        "The section a sentence comes from is evidence about what it contains. An "
+        "objective is overwhelmingly likely to appear in an abstract, introduction or "
+        "conclusion, and we use that: each entity type carries an affinity set of "
+        "sections it may be drawn from. This raises an obvious problem for documents "
+        "that could not be segmented, where positional evidence does not exist. Our "
+        "answer is to suspend the restriction entirely for unstructured segments. The "
+        "trade is deliberate and asymmetric. Such a document loses precision, because "
+        "its entities are no longer corroborated by position, but it keeps recall and "
+        "still contributes objectives, methods and results to the analysis."
+    )),
+    ("p", (
+        "A third case remains, where a paper genuinely contains no methodology: an "
+        "editorial, a position piece, an extended abstract. Here there is nothing to "
+        "recover and we do not pretend otherwise. The methodology dimension evaluates "
+        "to zero and the weights are not renormalised over the surviving dimensions. "
+        "Renormalising is tempting and we rejected it, because it would make a paper "
+        "matching on a single dimension indistinguishable in score from one matching on "
+        "all five. The per-dimension scores accompany every composite, so a reader can "
+        "see which evidence actually existed."
+    )),
+
+    ("h2", "Five-dimensional relationship scoring"),
+    ("p1", (
+        "Every pair of documents is scored, giving 435 pairs for a thirty-paper corpus. "
+        "Each pair is measured on five dimensions that each return a value in [0, 1], "
+        "combined by a weighted sum as shown in Table 1."
+    )),
+    ("table1", None),
+    ("p1", (
+        "The three semantic dimensions compare mean entity embeddings by cosine "
+        "similarity. The dataset dimension does not: dataset names are exact tokens, so "
+        "a set-overlap measure is more appropriate than a distributional one, and we "
+        "use the Jaccard index. Citation overlap is bibliographic coupling over parsed "
+        "reference lists, with a direct citation between the two documents treated as "
+        "maximal."
+    )),
+    ("p", (
+        "The weights are a stated prior and not a learned parameter, which we think is "
+        "defensible but want to be explicit about. They encode the judgement that what "
+        "a paper is trying to do and how it does it are jointly what make it that "
+        "paper, hence half the mass between them; that datasets and metrics are "
+        "concrete, checkable common ground, hence a further 0.40; and that shared "
+        "citations are genuine but lagging evidence, since a paper cannot cite work "
+        "published after it and reference lists are the noisiest region of a PDF to "
+        "parse. Two properties keep this from being arbitrary. The configuration is "
+        "validated at startup to sum to exactly 1.0 and the system refuses to run "
+        "otherwise, which guarantees the composite stays within [0, 1] and remains "
+        "comparable across runs. And the weights are adjustable at runtime, so any "
+        "ranking can be recomputed under a different prior without touching code."
+    )),
+    ("p", (
+        "One implementation detail cost us several days and is worth recording. Cosine "
+        "similarity ranges over [-1, 1], but relatedness does not; two documents "
+        "pointing in opposite directions in vector space are unrelated rather than "
+        "negatively related. Before we clamped the value, negative similarities were "
+        "rejected by the data model's range constraint, and 203 of 435 pairs were being "
+        "dropped from the results without any error being raised. The fix is a single "
+        "line. Finding it required counting the output rather than reading the code."
+    )),
+
+    ("h2", "Contradiction detection"),
+    ("p1", (
+        "Two detectors run and their verdicts are merged, because they fail in "
+        "different places. The numeric detector parses the values two papers report, "
+        "verifies that they measure the same metric on the same dataset under "
+        "conditions that do not conflict, and flags a material difference. It uses no "
+        "model at all. The inference detector presents two claim sentences to a "
+        "cross-encoder as a genuine sentence pair and reads off the stance."
+    )),
+    ("p", (
+        "Flagging is cheap and being right is not, so confirmation requires four "
+        "conditions to hold at once: the stance is contradiction, confidence is at "
+        "least 0.60, the two papers share a dataset or have comparable metrics, and "
+        "their methodology similarity is at least 0.30. Everything else is reported as "
+        "unconfirmed rather than suppressed. The methodology condition is what "
+        "eliminates the dominant false positive, in which two papers report different "
+        "numbers for the straightforward reason that they measured different things."
+    )),
+    ("p", (
+        "Candidate pairs are restricted to documents that already share a bridge "
+        "concept or score above a relatedness threshold. Unrelated papers cannot "
+        "contradict one another, and the restriction keeps this stage from becoming "
+        "quadratic in corpus size."
+    )),
+
+    ("h2", "Research gap discovery"),
+    ("p1", (
+        "Three kinds of absence are detected and they are not treated as equally "
+        "credible. A stated gap is one an author declares outright, and phrases such as "
+        "\"to the best of our knowledge\" or \"remains unexplored\" score above a vague "
+        "gesture toward future work. A weak-connection gap arises where several papers "
+        "share a specific concept yet score poorly against one another otherwise, "
+        "suggesting a subject approached from disconnected directions. An absent "
+        "pairing is a combination of two concepts that no paper in the corpus has made."
+    )),
+    ("p", (
+        "Absent pairings are the weakest evidence by a wide margin, because most pairs "
+        "of concepts have never been combined and most of them never should be. We "
+        "therefore require that both concept communities contain at least three papers, "
+        "that they do not already overlap, and that the two groups are themselves "
+        "related; if the papers using X have nothing to do with the papers using Y, the "
+        "fact that nobody combined them carries no information. At most one such gap "
+        "can reach the final list."
+    )),
+    ("p", (
+        "An early version of this stage returned around sixty gaps. That is not a "
+        "findings list but a haystack, and a reader skims it and trusts none of it. "
+        "Ranking candidates by importance and returning at most five above a high floor "
+        "produced output that a person will actually read, which we regard as the more "
+        "useful behaviour even though it lowers recall."
+    )),
+
+    # ------------------------------------------------------------------
+    ("h1", "Evaluation Corpus"),
+
+    ("p1", (
+        "A randomly drawn corpus cannot evaluate this system. Contradiction detection "
+        "only fires when two papers report the same metric on the same dataset, and a "
+        "relationship score can only be judged if the corpus contains both pairs that "
+        "ought to rank highly and pairs that ought not. A random sample of thirty "
+        "papers supplies almost no shared benchmarks and no negative control, and "
+        "against such a corpus a scorer that rated every pair as highly related would "
+        "appear to perform well."
+    )),
+    ("p", (
+        "We therefore built the corpus as four deliberate clusters of real arXiv "
+        "papers, shown in Table 2. Cluster membership is the ground truth: two papers "
+        "in the same cluster address the same problem on overlapping benchmarks and "
+        "should score as related, while cluster A against cluster D shares virtually "
+        "nothing and serves as the negative control. Clusters A and C overlap on "
+        "dataset but differ on method, which tests whether the score distinguishes "
+        "\"same benchmark\" from \"same approach\". The papers cite one another densely, "
+        "and several report differing values for identical baselines, which is a "
+        "well-documented phenomenon in this literature rather than something we "
+        "introduced."
+    )),
+    ("table2", None),
+
+    # ------------------------------------------------------------------
+    ("h1", "Results"),
+
+    ("h2", "Segmentation"),
+    ("p1", (
+        "All thirty documents were segmented using detected headings, with none falling "
+        "back to page chunking. Across the eight expected section types, 215 of 240 were "
+        "recovered, a recall of 90%. Recovery was perfect for introductions and "
+        "reference lists and weakest for results sections at 21 of 30, which is "
+        "unsurprising: results are frequently folded into a section headed Experiments, "
+        "or distributed across several subsections with names like Ablations and "
+        "Comparison that our patterns map elsewhere."
+    )),
+
+    ("h2", "Relationship ranking"),
+    ("p1", (
+        "Of the 435 scored pairs, 99 fall within a cluster and 336 across clusters, so "
+        "a system ranking pairs at random would be correct 23% of the time. Table 3 "
+        "reports precision at several cut-offs."
+    )),
+    ("table3", None),
+    ("p1", (
+        "Mean within-cluster score was 0.463 against 0.331 across clusters, a separation "
+        "of 0.132. The separation matters more than the precision figures, because it "
+        "indicates that the score is discriminative rather than merely correctly "
+        "ordered at the top."
+    )),
+    ("p", (
+        "The two errors in the top ten are instructive rather than embarrassing. Both "
+        "pair a self-supervised vision paper from cluster C with a convolutional "
+        "architecture paper from cluster A, and both are arguably correct: MoCo and "
+        "ResNet genuinely are closely related, since MoCo evaluates its representations "
+        "on ImageNet using a ResNet backbone. Our cluster assignment treats them as "
+        "different because one studies architecture and the other studies pretraining. "
+        "The score is picking up a real relationship that our ground truth, by design, "
+        "calls a miss."
+    )),
+
+    ("h2", "Contradictions and gaps"),
+    ("p1", (
+        "On the arXiv corpus the system confirmed no contradictions. It also produced "
+        "no false positives. We report both halves of that result because the second is "
+        "meaningful only alongside the first, and because an earlier configuration "
+        "confirmed 1,454 contradictions on the same corpus, essentially all of them "
+        "spurious. The successive gates described in Section 3.4 brought that figure to "
+        "79, then to 10, then to zero as each gate was added."
+    )),
+    ("p", (
+        "Whether zero is the right answer we cannot say from this corpus alone. To "
+        "check that recall had not simply been destroyed, we constructed a six-paper "
+        "synthetic corpus containing two deliberately planted contradictions, each a "
+        "pair of papers reporting materially different values for the same metric on "
+        "the same dataset. Both are detected and confirmed, and this is asserted by the "
+        "automated test suite. The honest reading is that the confirmation rule is "
+        "calibrated conservatively, and that real cross-paper numeric disagreement in "
+        "this particular literature is usually accompanied by differences in "
+        "experimental condition that the detector correctly declines to call a "
+        "contradiction."
+    )),
+    ("p", (
+        "Gap discovery returned five gaps from 1,037 extracted entities and 92 bridge "
+        "concepts. The resulting knowledge graph contains 1,159 nodes and 2,047 edges. "
+        "We do not report precision for gaps, because no ground truth exists and "
+        "constructing one would require an expert to label thousands of candidate "
+        "pairings. Reporting an unvalidated number would be worse than reporting none, "
+        "so the gaps are presented with their evidence trails for human judgement."
+    )),
+
+    ("h2", "Runtime"),
+    ("p1", (
+        "A full analysis of thirty papers completes in approximately 33 seconds on a "
+        "four-core CPU with no GPU and no network access, once the embedding model is "
+        "resident. Embedding dominates at roughly half the total. Enabling the "
+        "inference-based contradiction detector increases this substantially, and we "
+        "found it necessary to batch the cross-encoder calls and cap the batch size, "
+        "since the unbatched implementation issued one model call per claim pair and "
+        "exhausted CPU memory on a loaded machine."
+    )),
+
+    # ------------------------------------------------------------------
+    ("h1", "Limitations"),
+
+    ("p1", (
+        "The weights are asserted rather than learned. Learning them would require a "
+        "labelled relatedness dataset for this corpus, which does not exist, and we "
+        "regard the interpretability of the current scheme as partial compensation "
+        "rather than a full answer."
+    )),
+    ("p", (
+        "Extraction is rule-based and English-only. Gazetteers transfer poorly to "
+        "fields whose dataset and metric names we have not enumerated, and a paper in "
+        "another language would segment correctly while yielding almost no entities. "
+        "Scanned image-only PDFs produce no extractable text; these are reported as "
+        "ingestion errors rather than skipped silently, but no OCR is attempted."
+    )),
+    ("p", (
+        "Pair scoring is quadratic in corpus size. At thirty papers this is "
+        "irrelevant, and at a few hundred it remains tractable, but the approach as "
+        "described would not scale to a corpus of tens of thousands without "
+        "approximate nearest-neighbour retrieval to prune the candidate set first."
+    )),
+    ("p", (
+        "Finally, the contradiction result reported above is a single data point from a "
+        "single corpus in a single field. The gates are tuned conservatively and we "
+        "have shown they preserve recall on planted contradictions, but we have not "
+        "shown what their recall is on real ones, because we have no labelled set of "
+        "real ones to measure against."
+    )),
+
+    # ------------------------------------------------------------------
+    ("h1", "Conclusion"),
+
+    ("p1", (
+        "We have described a system that reads a folder of research papers and reports "
+        "how they relate, where they disagree and what they collectively omit, with "
+        "every claim traceable to a specific sentence on a specific page. Segmentation "
+        "by relative font size handled all thirty documents in our evaluation corpus "
+        "and recovered 90% of expected sections. The five-dimensional score reached 80% "
+        "precision@10 against a 23% baseline while remaining fully decomposable. "
+        "Contradiction detection produced no false positives, and we have been explicit "
+        "that it also produced no confirmed findings on real papers."
+    )),
+    ("p", (
+        "The design commitment throughout was that an answer a reader cannot verify is "
+        "not worth giving. That constraint ruled out several easier architectures and "
+        "cost us accuracy in places. We think it is the right trade for a tool intended "
+        "to be used on literature a researcher will then go and read for themselves."
+    )),
+    ("p", (
+        "The implementation, the thirty-paper corpus and the evaluation scripts are "
+        "available so that the figures above can be reproduced."
+    )),
+]
+
+TABLE1 = {
+    "caption": "The five scoring dimensions, their weights, and the measure used for each.",
+    "headers": ["Dimension", "Wt.", "Measure", "Compares"],
+    "rows": [
+        ["Objective", "0.25", "Cosine", "Mean embedding of objective statements"],
+        ["Methodology", "0.25", "Cosine", "Mean embedding of method entities"],
+        ["Dataset", "0.20", "Jaccard", "Sets of dataset names"],
+        ["Results and metrics", "0.20", "Cosine", "Reported results and evaluation metrics"],
+        ["Citation", "0.10", "Jaccard", "Reference lists (bibliographic coupling)"],
+    ],
+    "widths": [0.22, 0.10, 0.13, 0.55],
+}
+
+TABLE2 = {
+    "caption": "The evaluation corpus. Cluster membership is the ground truth for relationship ranking.",
+    "headers": ["Cluster", "Theme", "n", "Role in the evaluation"],
+    "rows": [
+        ["A", "Convolutional image classification", "8",
+         "Dense cross-citation; same architectures reported with differing baselines"],
+        ["B", "Pretrained language models", "8",
+         "Shared GLUE and SQuAD benchmarks"],
+        ["C", "Vision transformers and self-supervised vision", "8",
+         "Shares ImageNet with A but not method"],
+        ["D", "Retrieval, information extraction, knowledge graphs", "6",
+         "Negative control against cluster A"],
+    ],
+    "widths": [0.11, 0.30, 0.07, 0.52],
+}
+
+TABLE3 = {
+    "caption": "Relationship ranking precision at increasing cut-offs. A random ranking scores 23%.",
+    "headers": ["Cut-off", "Correct", "Precision"],
+    "rows": [
+        ["precision@5", "3 / 5", "60%"],
+        ["precision@10", "8 / 10", "80%"],
+        ["precision@20", "17 / 20", "85%"],
+        ["precision@30", "23 / 30", "77%"],
+        ["Random baseline", "—", "23%"],
+    ],
+    "widths": [0.30, 0.25, 0.25],
+}
+
+TABLES = {"table1": TABLE1, "table2": TABLE2, "table3": TABLE3}
+
+REFERENCES = [
+    "Reimers, N., Gurevych, I.: Sentence-BERT: Sentence Embeddings using Siamese "
+    "BERT-Networks. In: Proceedings of EMNLP-IJCNLP, pp. 3982–3992 (2019).",
+
+    "Beltagy, I., Lo, K., Cohan, A.: SciBERT: A Pretrained Language Model for "
+    "Scientific Text. In: Proceedings of EMNLP-IJCNLP, pp. 3615–3620 (2019).",
+
+    "Cohan, A., Feldman, S., Beltagy, I., Downey, D., Weld, D.S.: SPECTER: "
+    "Document-level Representation Learning using Citation-informed Transformers. "
+    "In: Proceedings of ACL, pp. 2270–2282 (2020).",
+
+    "Luan, Y., He, L., Ostendorf, M., Hajishirzi, H.: Multi-Task Identification of "
+    "Entities, Relations, and Coreference for Scientific Knowledge Graph "
+    "Construction. In: Proceedings of EMNLP, pp. 3219–3232 (2018).",
+
+    "Yao, Y., Ye, D., Li, P., Han, X., Lin, Y., Liu, Z., Sun, M.: DocRED: A "
+    "Large-Scale Document-Level Relation Extraction Dataset. In: Proceedings of ACL, "
+    "pp. 764–777 (2019).",
+
+    "Thorne, J., Vlachos, A., Christodoulopoulos, C., Mittal, A.: FEVER: a "
+    "Large-scale Dataset for Fact Extraction and VERification. In: Proceedings of "
+    "NAACL-HLT, pp. 809–819 (2018).",
+
+    "Wadden, D., Lin, S., Lo, K., Wang, L.L., van Zuylen, M., Cohan, A., Hajishirzi, "
+    "H.: Fact or Fiction: Verifying Scientific Claims. In: Proceedings of EMNLP, "
+    "pp. 7534–7550 (2020).",
+
+    "Williams, A., Nangia, N., Bowman, S.: A Broad-Coverage Challenge Corpus for "
+    "Sentence Understanding through Inference. In: Proceedings of NAACL-HLT, "
+    "pp. 1112–1122 (2018).",
+
+    "He, P., Liu, X., Gao, J., Chen, W.: DeBERTa: Decoding-enhanced BERT with "
+    "Disentangled Attention. In: Proceedings of ICLR (2021).",
+
+    "Kessler, M.M.: Bibliographic coupling between scientific papers. American "
+    "Documentation 14(1), 10–25 (1963).",
+
+    "Small, H.: Co-citation in the scientific literature: A new measure of the "
+    "relationship between two documents. Journal of the American Society for "
+    "Information Science 24(4), 265–269 (1973).",
+
+    "Devlin, J., Chang, M.-W., Lee, K., Toutanova, K.: BERT: Pre-training of Deep "
+    "Bidirectional Transformers for Language Understanding. In: Proceedings of "
+    "NAACL-HLT, pp. 4171–4186 (2019).",
+
+    "Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A.N., "
+    "Kaiser, Ł., Polosukhin, I.: Attention Is All You Need. In: Advances in Neural "
+    "Information Processing Systems 30, pp. 5998–6008 (2017).",
+
+    "He, K., Zhang, X., Ren, S., Sun, J.: Deep Residual Learning for Image "
+    "Recognition. In: Proceedings of CVPR, pp. 770–778 (2016).",
+
+    "He, K., Fan, H., Wu, Y., Xie, S., Girshick, R.: Momentum Contrast for "
+    "Unsupervised Visual Representation Learning. In: Proceedings of CVPR, "
+    "pp. 9729–9738 (2020).",
+
+    "Lewis, P., Perez, E., Piktus, A., Petroni, F., Karpukhin, V., Goyal, N., "
+    "Küttler, H., Lewis, M., Yih, W., Rocktäschel, T., Riedel, S., Kiela, D.: "
+    "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks. In: Advances "
+    "in Neural Information Processing Systems 33, pp. 9459–9474 (2020).",
+
+    "Ji, S., Pan, S., Cambria, E., Marttinen, P., Yu, P.S.: A Survey on Knowledge "
+    "Graphs: Representation, Acquisition, and Applications. IEEE Transactions on "
+    "Neural Networks and Learning Systems 33(2), 494–514 (2022).",
+
+    "Hagberg, A.A., Schult, D.A., Swart, P.J.: Exploring Network Structure, "
+    "Dynamics, and Function using NetworkX. In: Proceedings of the 7th Python in "
+    "Science Conference, pp. 11–15 (2008).",
+]
