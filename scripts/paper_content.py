@@ -441,10 +441,9 @@ BODY = [
     ("p1", (
         "A full analysis of thirty papers takes about 33 seconds on a four-core CPU "
         "with no GPU and no network, once the embedding model is resident; embedding "
-        "is roughly half of that. The inference-based detector raises it "
-        "substantially, and the cross-encoder calls had to be batched with a capped "
-        "batch size, since one model call per claim pair exhausted CPU memory on a "
-        "loaded machine."
+        "is roughly half of that. The inference-based detector raises it sharply, and "
+        "its calls had to be batched with a capped batch size: one model call per "
+        "claim pair exhausted CPU memory."
     )),
 
     # ------------------------------------------------------------------
@@ -459,8 +458,8 @@ BODY = [
         "Extraction is rule-based and English-only. Gazetteers transfer poorly to "
         "fields whose dataset and metric names we have not enumerated, and a paper in "
         "another language would segment correctly while yielding almost no entities. "
-        "Scanned image-only PDFs produce no extractable text; these are reported as "
-        "ingestion errors rather than skipped silently, but no OCR is attempted."
+        "Scanned PDFs yield no text; these are reported as ingestion errors rather "
+        "than skipped, but no OCR is attempted."
     )),
     ("p", (
         "Pair scoring is quadratic. That is irrelevant at thirty papers and tractable at "
@@ -477,14 +476,13 @@ BODY = [
     ("h1", "Conclusion"),
 
     ("p1", (
-        "We have described a system that reads a folder of research papers and reports "
-        "how they relate, where they disagree and what they collectively omit, with "
-        "every claim traceable to a specific sentence on a specific page. Segmentation "
-        "by relative font size handled all thirty documents in our evaluation corpus "
-        "and recovered 90% of expected sections. The five-dimensional score reached 80% "
-        "precision@10 against a 23% baseline while remaining fully decomposable. "
-        "Contradiction detection produced no false positives, and we have been explicit "
-        "that it also produced no confirmed findings on real papers."
+        "We have described a system that reads a folder of papers and reports how they "
+        "relate, where they disagree and what they omit, with every claim traceable to "
+        "a sentence on a page. Segmentation by relative font size handled all thirty "
+        "documents and recovered 90% of expected sections; the five-dimensional score "
+        "reached 80% precision@10 against a 23% baseline while remaining decomposable. "
+        "Contradiction detection produced no false positives, and also no confirmed "
+        "findings on real papers."
     )),
     ("p", (
         "The commitment throughout was that an answer a reader cannot verify is not "
@@ -563,12 +561,12 @@ FIGURES = {
                    "the top of the ranking.",
     },
     "fig5": {
-        "file": "paper/figures/fig5_interface.png", "max_in": 5.4,
-        "caption": "A research gap in the generated report. For a stated gap the "
-                   "finding is the author's own sentence, so claim and quoted "
-                   "evidence coincide; the trail adds the provenance - document, "
-                   "section, page - that makes it checkable. Every contradiction "
-                   "and gap carries one.",
+        "file": "paper/figures/fig5_interface.png", "width_in": 5.2,
+        "caption": "The interface. (a) Headline counts, the graph with one paper "
+                   "selected - selection dims all but its neighbourhood - and the "
+                   "inspector. (b) A reported gap: the finding, its supporting "
+                   "paper, the verbatim sentence, and the provenance that makes "
+                   "it checkable.",
     },
     "fig4": {
         "file": "paper/figures/fig4_sections.png", "max_in": 3.1,

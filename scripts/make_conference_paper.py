@@ -199,7 +199,12 @@ class Renderer:
 
         px_w, px_h = png_size(path)
         cap = min(self.max_figure_inches, spec.get("max_in", 99))
-        width_in = min(cap, px_w / 300)
+        # px/300 is a sensible printed width for a chart rendered at 300 dpi, and
+        # meaningless for a screenshot, which has no inherent resolution. Treating
+        # one as the other shrank the interface figure to 4.2in inside a 5.4in
+        # slot and made its text unreadable. "width_in" overrides the inference.
+        width_in = spec["width_in"] if "width_in" in spec else min(cap, px_w / 300)
+        width_in = min(width_in, self.max_figure_inches)
         height_in = width_in * px_h / px_w
 
         rel_id = f"rIdFig{self.figure_n}"
