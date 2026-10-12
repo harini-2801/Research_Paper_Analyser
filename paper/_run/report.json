@@ -1,0 +1,209 @@
+{
+  "summary": {
+    "total_documents": 30,
+    "confirmed_contradictions": 0,
+    "unconfirmed_contradictions": 0,
+    "confirmed_gaps": 5,
+    "relationship_pairs_scored": 435
+  },
+  "confirmed_contradictions": [],
+  "research_gaps": [
+    {
+      "id": "33c46331-8e6d-4630-9710-bd1e67998eaf",
+      "description": "Empirical results show that DocRED is challenging for existing RE methods, which indicates that document-level RE remains an open problem and requires further efforts.",
+      "novelty_score": 0.91,
+      "supporting_docs": [
+        "docred_2019"
+      ],
+      "bridge_entities": [],
+      "explanation": "Stated directly in docred_2019 (abstract, p.1) as an open research gap.",
+      "evidence": [
+        {
+          "source_doc_id": "docred_2019",
+          "source_doc_title": "DocRED: A Large-Scale Document-Level Relation Extraction Dataset",
+          "section": "abstract",
+          "page_number": 1,
+          "sentence_span": "Empirical results show that DocRED is challenging for existing RE methods, which indicates that document-level RE remains an open problem and requires further efforts."
+        }
+      ]
+    },
+    {
+      "id": "e0513262-27f7-43bd-ad63-6ce181c982b7",
+      "description": "Experimental results show that the performance of existing methods declines signi\ufb01cantly on DocRED, indicating the task documentlevel RE is more challenging than sentence-level RE and remains an open problem.",
+      "novelty_score": 0.91,
+      "supporting_docs": [
+        "docred_2019"
+      ],
+      "bridge_entities": [],
+      "explanation": "Stated directly in docred_2019 (introduction, p.1) as an open research gap.",
+      "evidence": [
+        {
+          "source_doc_id": "docred_2019",
+          "source_doc_title": "DocRED: A Large-Scale Document-Level Relation Extraction Dataset",
+          "section": "introduction",
+          "page_number": 1,
+          "sentence_span": "Experimental results show that the performance of existing methods declines signi\ufb01cantly on DocRED, indicating the task documentlevel RE is more challenging than sentence-level RE and remains an open problem."
+        }
+      ]
+    },
+    {
+      "id": "17f12f1d-97c7-4582-b417-e2933f0aef6b",
+      "description": "Additionally, providing provenance for their decisions and updating their world knowledge remain open research problems.",
+      "novelty_score": 0.91,
+      "supporting_docs": [
+        "rag_2020"
+      ],
+      "bridge_entities": [],
+      "explanation": "Stated directly in rag_2020 (abstract, p.1) as an open research gap.",
+      "evidence": [
+        {
+          "source_doc_id": "rag_2020",
+          "source_doc_title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
+          "section": "abstract",
+          "page_number": 1,
+          "sentence_span": "Additionally, providing provenance for their decisions and updating their world knowledge remain open research problems."
+        }
+      ]
+    },
+    {
+      "id": "81f263df-4da5-4403-96b5-08e937347f61",
+      "description": "This however is computationally expensive, and the high level of detail required for image generation may not be necessary for representation learning.",
+      "novelty_score": 0.73,
+      "supporting_docs": [
+        "byol_2020"
+      ],
+      "bridge_entities": [],
+      "explanation": "Stated directly in byol_2020 (related_work, p.2) as a limitation of the work.",
+      "evidence": [
+        {
+          "source_doc_id": "byol_2020",
+          "source_doc_title": "Bootstrap Your Own Latent A New Approach to Self-Supervised Learning",
+          "section": "related_work",
+          "page_number": 2,
+          "sentence_span": "This however is computationally expensive, and the high level of detail required for image generation may not be necessary for representation learning."
+        }
+      ]
+    },
+    {
+      "id": "fd198dd9-02f7-46ac-a977-209f85de8ad7",
+      "description": "Context-less example-based learning has the drawback that many different hypotheses can be consistent with the data, especially in the one-shot case.",
+      "novelty_score": 0.73,
+      "supporting_docs": [
+        "clip_2021"
+      ],
+      "bridge_entities": [],
+      "explanation": "Stated directly in clip_2021 (results, p.8) as a limitation of the work.",
+      "evidence": [
+        {
+          "source_doc_id": "clip_2021",
+          "source_doc_title": "Learning Transferable Visual Models From Natural Language Supervision",
+          "section": "results",
+          "page_number": 8,
+          "sentence_span": "Context-less example-based learning has the drawback that many different hypotheses can be consistent with the data, especially in the one-shot case."
+        }
+      ]
+    }
+  ],
+  "top_related_pairs": [
+    {
+      "doc_a": "mae_2021",
+      "doc_b": "swin_transformer_2021",
+      "composite_score": 0.635
+    },
+    {
+      "doc_a": "albert_2019",
+      "doc_b": "roberta_2019",
+      "composite_score": 0.6283
+    },
+    {
+      "doc_a": "distilbert_2019",
+      "doc_b": "electra_2020",
+      "composite_score": 0.6128
+    },
+    {
+      "doc_a": "moco_2019",
+      "doc_b": "resnet_2015",
+      "composite_score": 0.5965
+    },
+    {
+      "doc_a": "byol_2020",
+      "doc_b": "vgg_very_deep_2014",
+      "composite_score": 0.5936
+    },
+    {
+      "doc_a": "squeeze_excitation_2017",
+      "doc_b": "wide_resnet_2016",
+      "composite_score": 0.5902
+    },
+    {
+      "doc_a": "resnet_2015",
+      "doc_b": "wide_resnet_2016",
+      "composite_score": 0.5878
+    },
+    {
+      "doc_a": "resnet_2015",
+      "doc_b": "squeeze_excitation_2017",
+      "composite_score": 0.5803
+    },
+    {
+      "doc_a": "moco_2019",
+      "doc_b": "simclr_2020",
+      "composite_score": 0.5716
+    },
+    {
+      "doc_a": "dpr_2020",
+      "doc_b": "rag_2020",
+      "composite_score": 0.5709
+    },
+    {
+      "doc_a": "vgg_very_deep_2014",
+      "doc_b": "wide_resnet_2016",
+      "composite_score": 0.5647
+    },
+    {
+      "doc_a": "byol_2020",
+      "doc_b": "simclr_2020",
+      "composite_score": 0.5611
+    },
+    {
+      "doc_a": "batchnorm_2015",
+      "doc_b": "squeeze_excitation_2017",
+      "composite_score": 0.5564
+    },
+    {
+      "doc_a": "deit_2020",
+      "doc_b": "efficientnet_2019",
+      "composite_score": 0.5517
+    },
+    {
+      "doc_a": "deit_2020",
+      "doc_b": "vit_2020",
+      "composite_score": 0.5516
+    },
+    {
+      "doc_a": "albert_2019",
+      "doc_b": "xlnet_2019",
+      "composite_score": 0.5499
+    },
+    {
+      "doc_a": "deit_2020",
+      "doc_b": "simclr_2020",
+      "composite_score": 0.5499
+    },
+    {
+      "doc_a": "mobilenets_2017",
+      "doc_b": "vgg_very_deep_2014",
+      "composite_score": 0.5444
+    },
+    {
+      "doc_a": "bert_2018",
+      "doc_b": "distilbert_2019",
+      "composite_score": 0.5401
+    },
+    {
+      "doc_a": "byol_2020",
+      "doc_b": "moco_2019",
+      "composite_score": 0.5393
+    }
+  ]
+}

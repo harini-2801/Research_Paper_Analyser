@@ -81,6 +81,38 @@ def para(style: str, text: str, bold_prefix: str | None = None) -> str:
     )
 
 
+def png_size(path: Path) -> tuple[int, int]:
+    """Pixel dimensions straight out of the PNG IHDR chunk."""
+    raw = path.read_bytes()
+    return int.from_bytes(raw[16:20], "big"), int.from_bytes(raw[20:24], "big")
+
+
+EMU_PER_INCH = 914400
+
+
+def drawing_xml(rel_id: str, width_emu: int, height_emu: int, name: str) -> str:
+    """An inline image run. Word needs the full DrawingML scaffold for this."""
+    return (
+        "<w:r><w:drawing>"
+        f'<wp:inline distT="0" distB="0" distL="0" distR="0">'
+        f'<wp:extent cx="{width_emu}" cy="{height_emu}"/>'
+        '<wp:effectExtent l="0" t="0" r="0" b="0"/>'
+        f'<wp:docPr id="{abs(hash(name)) % 90000 + 1000}" name="{escape(name)}"/>'
+        "<wp:cNvGraphicFramePr>"
+        '<a:graphicFrameLocks xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" noChangeAspect="1"/>'
+        "</wp:cNvGraphicFramePr>"
+        '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+        '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+        '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">'
+        f'<pic:nvPicPr><pic:cNvPr id="0" name="{escape(name)}"/><pic:cNvPicPr/></pic:nvPicPr>'
+        f'<pic:blipFill><a:blip r:embed="{rel_id}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>'
+        "<pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/>"
+        f'<a:ext cx="{width_emu}" cy="{height_emu}"/></a:xfrm>'
+        '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>'
+        "</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"
+    )
+
+
 def table_xml(spec: dict, style: str, total_dxa: int = 9000) -> str:
     """A ruled table using the template's own table style."""
     widths = [int(w * total_dxa) for w in spec["widths"]]
@@ -141,10 +173,46 @@ class Renderer:
     caption_above = False
     heading_caps = False
 
+    max_figure_inches = 6.0
+
     def __init__(self) -> None:
         self.h1_n = 0
         self.h2_n = 0
         self.table_n = 0
+        self.figure_n = 0
+        # Images collected during rendering, written into the package afterwards.
+        self.media: list[tuple[str, Path]] = []
+
+    def figure(self, key: str) -> str:
+        """An inline image, centred, with its caption beneath it."""
+        self.figure_n += 1
+        spec = C.FIGURES[key]
+        path = ROOT / spec["file"]
+
+        px_w, px_h = png_size(path)
+        width_in = min(self.max_figure_inches, px_w / 300)
+        height_in = width_in * px_h / px_w
+
+        rel_id = f"rIdFig{self.figure_n}"
+        self.media.append((rel_id, path))
+
+        image = (
+            '<w:p><w:pPr><w:jc w:val="center"/></w:pPr>'
+            + drawing_xml(
+                rel_id,
+                int(width_in * EMU_PER_INCH),
+                int(height_in * EMU_PER_INCH),
+                path.name,
+            )
+            + "</w:p>"
+        )
+        caption = para(
+            self.styles["figcaption"],
+            f"FIGURE {self.figure_n}. {spec['caption']}"
+            if self.caps_figure_label
+            else f"Fig. {self.figure_n}. {spec['caption']}",
+        )
+        return image + caption
 
     # -- per-house pieces, overridden below --------------------------------
 
@@ -194,6 +262,8 @@ class Renderer:
                 out += para(self.styles["bullet"], payload)
             elif kind in C.TABLES:
                 out += self.table(kind)
+            elif kind in C.FIGURES:
+                out += self.figure(kind)
             else:
                 raise ValueError(f"unknown block kind: {kind}")
         out += self.references()
@@ -216,11 +286,15 @@ class AIPRenderer(Renderer):
         "bullet": "Paragraphbulleted",
         "ref": "Reference",
         "caption": "TableCaption",
+        "figcaption": "FigureCaption",
     }
     table_style = "TableGrid"
     number_headings = False
     caption_above = False
     heading_caps = True
+    caps_figure_label = True
+    # US Letter with the template's margins leaves about this much column.
+    max_figure_inches = 6.0
 
     def front_matter(self) -> str:
         out = para(self.styles["title"], C.TITLE)
@@ -272,6 +346,7 @@ class LNCSRenderer(Renderer):
         "bullet": "bulletitem",
         "ref": "referenceitem",
         "caption": "tablecaption",
+        "figcaption": "figurecaption",
     }
     table_style = "TableGrid"
     # heading1 and heading2 in this template already carry a numPr, so Word
@@ -279,6 +354,9 @@ class LNCSRenderer(Renderer):
     number_headings = False
     caption_above = True
     heading_caps = False
+    caps_figure_label = False
+    # The LNCS text block is 12.2 cm wide.
+    max_figure_inches = 4.8
 
     def front_matter(self) -> str:
         out = para(self.styles["title"], C.TITLE)
@@ -361,13 +439,32 @@ def render(template: Path, renderer: Renderer, out_path: Path) -> None:
             if name == "word/document.xml":
                 dst.writestr(item, new_document.encode("utf-8"))
             elif name == "[Content_Types].xml":
-                raw = src.read(name).decode("utf-8")
-                dst.writestr(item, _demacro_content_types(raw).encode("utf-8"))
+                raw = _demacro_content_types(src.read(name).decode("utf-8"))
+                if "Extension=\"png\"" not in raw:
+                    raw = raw.replace(
+                        "<Types ",
+                        "<Types ", 1
+                    ).replace(
+                        "</Types>",
+                        '<Default Extension="png" ContentType="image/png"/></Types>',
+                    )
+                dst.writestr(item, raw.encode("utf-8"))
             elif name == "word/_rels/document.xml.rels":
-                raw = src.read(name).decode("utf-8")
-                dst.writestr(item, _demacro_rels(raw).encode("utf-8"))
+                raw = _demacro_rels(src.read(name).decode("utf-8"))
+                added = "".join(
+                    f'<Relationship Id="{rid}" '
+                    'Type="http://schemas.openxmlformats.org/officeDocument/2006/'
+                    'relationships/image" '
+                    f'Target="media/{path.name}"/>'
+                    for rid, path in renderer.media
+                )
+                raw = raw.replace("</Relationships>", added + "</Relationships>")
+                dst.writestr(item, raw.encode("utf-8"))
             else:
                 dst.writestr(item, src.read(name))
+
+        for _, path in renderer.media:
+            dst.writestr(f"word/media/{path.name}", path.read_bytes())
     src.close()
 
 

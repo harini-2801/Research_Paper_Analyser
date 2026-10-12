@@ -176,7 +176,7 @@ BODY = [
     ("h1", "Method"),
 
     ("p1", (
-        "The pipeline runs eleven stages in a fixed order. The ordering is forced by "
+        "The pipeline runs eleven stages in a fixed order, shown in Figure 1. The ordering is forced by "
         "data dependency rather than chosen: three of the five scoring dimensions are "
         "cosine similarities between entity vectors, so embedding has to complete "
         "before scoring begins. We learned this the hard way. In an early version the "
@@ -185,6 +185,8 @@ BODY = [
         "to its dataset-overlap term while continuing to produce plausible-looking "
         "output."
     )),
+
+    ("fig1", None),
 
     ("h2", "Recovering document structure"),
     ("p1", (
@@ -375,26 +377,33 @@ BODY = [
     ("p1", (
         "All thirty documents were segmented using detected headings, with none falling "
         "back to page chunking. Across the eight expected section types, 215 of 240 were "
-        "recovered, a recall of 90%. Recovery was perfect for introductions and "
+        "recovered, a recall of 90%, broken down by section in Figure 2. Recovery was perfect for introductions and "
         "reference lists and weakest for results sections at 21 of 30, which is "
         "unsurprising: results are frequently folded into a section headed Experiments, "
         "or distributed across several subsections with names like Ablations and "
         "Comparison that our patterns map elsewhere."
     )),
 
+    ("fig4", None),
+
     ("h2", "Relationship ranking"),
     ("p1", (
         "Of the 435 scored pairs, 99 fall within a cluster and 336 across clusters, so "
         "a system ranking pairs at random would be correct 23% of the time. Table 3 "
-        "reports precision at several cut-offs."
+        "reports precision at several cut-offs, and Figure 3 shows the full "
+        "score matrix ordered by cluster, in which the within-cluster blocks "
+        "and the pale cluster A against cluster D region are both visible "
+        "directly."
     )),
     ("table3", None),
+    ("fig2", None),
     ("p1", (
         "Mean within-cluster score was 0.463 against 0.331 across clusters, a separation "
-        "of 0.132. The separation matters more than the precision figures, because it "
+        "of 0.132; Figure 4 shows the two distributions. The separation matters more than the precision figures, because it "
         "indicates that the score is discriminative rather than merely correctly "
         "ordered at the top."
     )),
+    ("fig3", None),
     ("p", (
         "The two errors in the top ten are instructive rather than embarrassing. Both "
         "pair a self-supervised vision paper from cluster C with a convolutional "
@@ -545,6 +554,37 @@ TABLE3 = {
 }
 
 TABLES = {"table1": TABLE1, "table2": TABLE2, "table3": TABLE3}
+
+FIGURES = {
+    "fig1": {
+        "file": "paper/figures/fig1_pipeline.png",
+        "caption": "The eleven pipeline stages. Ordering is forced by data "
+                   "dependency: three of the five scoring dimensions are cosine "
+                   "similarities over entity vectors, so embedding must precede "
+                   "scoring.",
+    },
+    "fig2": {
+        "file": "paper/figures/fig2_heatmap.png",
+        "caption": "Composite relationship score for all 435 document pairs, "
+                   "ordered by topical cluster. Blocks on the diagonal are "
+                   "within-cluster pairs. The pale lower-left region is cluster A "
+                   "against cluster D, the negative control. The diagonal itself "
+                   "is masked; a document is not scored against itself.",
+    },
+    "fig3": {
+        "file": "paper/figures/fig3_separation.png",
+        "caption": "Score distributions for within-cluster and cross-cluster "
+                   "pairs. The separation of 0.132 between the means indicates "
+                   "the score is discriminative, not merely correctly ordered at "
+                   "the top of the ranking.",
+    },
+    "fig4": {
+        "file": "paper/figures/fig4_sections.png",
+        "caption": "Sections recovered across the thirty documents. Results "
+                   "sections are weakest at 21 of 30, usually because they are "
+                   "folded into a section headed Experiments.",
+    },
+}
 
 REFERENCES = [
     "Reimers, N., Gurevych, I.: Sentence-BERT: Sentence Embeddings using Siamese "
