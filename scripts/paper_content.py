@@ -182,7 +182,7 @@ BODY = [
         "output."
     )),
 
-    ("fig1", None),
+    ("pipeline", None),
 
     ("h2", "Recovering document structure"),
     ("p1", (
@@ -336,6 +336,14 @@ BODY = [
     )),
 
     # ------------------------------------------------------------------
+    ("p", (
+        "Findings are presented in a browser interface, shown in Figure 2, which "
+        "is how a reader actually works with them: the graph can be explored, a "
+        "selected paper dims everything outside its neighbourhood, and every pair "
+        "score can be opened to see the five dimensions it was built from."
+    )),
+    ("workspace", None),
+
     ("h1", "Evaluation Corpus"),
 
     ("p1", (
@@ -368,33 +376,32 @@ BODY = [
     ("p1", (
         "All thirty documents were segmented using detected headings, with none falling "
         "back to page chunking. Across the eight expected section types, 215 of 240 were "
-        "recovered, a recall of 90%, broken down by section in Figure 2. Recovery was perfect for introductions and "
+        "recovered, a recall of 90%; Figure 3 shows the view in which this is inspected per paper. Recovery was perfect for introductions and "
         "reference lists and weakest for results sections at 21 of 30, which is "
         "unsurprising: results are frequently folded into a section headed Experiments, "
         "or distributed across several subsections with names like Ablations and "
         "Comparison that our patterns map elsewhere."
     )),
 
-    ("fig4", None),
+    ("documents", None),
 
     ("h2", "Relationship ranking"),
     ("p1", (
         "Of the 435 scored pairs, 99 fall within a cluster and 336 across clusters, so "
         "a system ranking pairs at random would be correct 23% of the time. Table 3 "
-        "reports precision at several cut-offs, and Figure 3 shows the full "
+        "reports precision at several cut-offs, and Figure 4 shows the full "
         "score matrix ordered by cluster, in which the within-cluster blocks "
         "and the pale cluster A against cluster D region are both visible "
         "directly."
     )),
     ("table3", None),
-    ("fig2", None),
+    ("heatmap", None),
     ("p1", (
         "Mean within-cluster score was 0.463 against 0.331 across clusters, a separation "
-        "of 0.132; Figure 4 shows the two distributions. The separation matters more than the precision figures, because it "
+        "of 0.132. The separation matters more than the precision figures, because it "
         "indicates that the score is discriminative rather than merely correctly "
         "ordered at the top."
     )),
-    ("fig3", None),
     ("p", (
         "The two errors in the top ten are instructive rather than embarrassing. Both "
         "pair a self-supervised vision paper from cluster C with a convolutional "
@@ -427,7 +434,11 @@ BODY = [
         "experimental condition that the detector correctly declines to call a "
         "contradiction."
     )),
-    ("fig5", None),
+    ("p", (
+        "Figure 5 shows a gap as reported, with the trail that makes it "
+        "checkable."
+    )),
+    ("evidence", None),
     ("p", (
         "Gap discovery returned five gaps from 1,037 extracted entities and 92 bridge "
         "concepts. The resulting knowledge graph contains 1,159 nodes and 2,047 edges. "
@@ -538,14 +549,29 @@ TABLE3 = {
 TABLES = {"table1": TABLE1, "table2": TABLE2, "table3": TABLE3}
 
 FIGURES = {
-    "fig1": {
+    "pipeline": {
         "file": "paper/figures/fig1_pipeline.png", "max_in": 5.5,
         "caption": "The eleven pipeline stages. Ordering is forced by data "
                    "dependency: three of the five scoring dimensions are cosine "
                    "similarities over entity vectors, so embedding must precede "
                    "scoring.",
     },
-    "fig2": {
+    "workspace": {
+        "file": "paper/figures/fig2_workspace.png", "width_in": 5.2,
+        "caption": "The analysis workspace. Above, the headline counts, the "
+                   "knowledge graph with one paper selected - selection dims "
+                   "everything outside its neighbourhood - and the inspector. "
+                   "Below, the composite score for every pair of papers, which "
+                   "the reader can sort and inspect cell by cell.",
+    },
+    "documents": {
+        "file": "paper/figures/fig3_documents.png", "width_in": 5.2,
+        "caption": "The per-document view, where segmentation becomes visible: "
+                   "for each paper the assigned category and its confidence, the "
+                   "page count, the sections actually recovered, and the number "
+                   "of references parsed.",
+    },
+    "heatmap": {
         "file": "paper/figures/fig2_heatmap.png", "max_in": 3.0,
         "caption": "Composite relationship score for all 435 document pairs, "
                    "ordered by topical cluster. Blocks on the diagonal are "
@@ -553,28 +579,15 @@ FIGURES = {
                    "against cluster D, the negative control. The diagonal itself "
                    "is masked; a document is not scored against itself.",
     },
-    "fig3": {
-        "file": "paper/figures/fig3_separation.png", "max_in": 3.1,
-        "caption": "Score distributions for within-cluster and cross-cluster "
-                   "pairs. The separation of 0.132 between the means indicates "
-                   "the score is discriminative, not merely correctly ordered at "
-                   "the top of the ranking.",
-    },
-    "fig5": {
-        "file": "paper/figures/fig5_interface.png", "width_in": 5.2,
-        "caption": "The interface. (a) Headline counts, the graph with one paper "
-                   "selected - selection dims all but its neighbourhood - and the "
-                   "inspector. (b) A reported gap: the finding, its supporting "
-                   "paper, the verbatim sentence, and the provenance that makes "
-                   "it checkable.",
-    },
-    "fig4": {
-        "file": "paper/figures/fig4_sections.png", "max_in": 3.1,
-        "caption": "Sections recovered across the thirty documents. Results "
-                   "sections are weakest at 21 of 30, usually because they are "
-                   "folded into a section headed Experiments.",
+    "evidence": {
+        "file": "paper/figures/fig5_evidence.png", "width_in": 5.2,
+        "caption": "A reported gap with its evidence trail: the finding, the "
+                   "paper supporting it, the verbatim sentence, and the "
+                   "provenance - document, section, page - that makes it "
+                   "checkable against the source.",
     },
 }
+
 
 REFERENCES = [
     "Reimers, N., Gurevych, I.: Sentence-BERT: Sentence Embeddings using Siamese "
