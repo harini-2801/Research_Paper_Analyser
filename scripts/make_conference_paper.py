@@ -74,9 +74,17 @@ def rich_para(style: str, segments: list[tuple[str, str]]) -> str:
     return f'<w:p><w:pPr><w:pStyle w:val="{style}"/></w:pPr>{body}</w:p>'
 
 
-def para(style: str, text: str, bold_prefix: str | None = None) -> str:
+def para(
+    style: str,
+    text: str,
+    bold_prefix: str | None = None,
+    no_hyphen: bool = False,
+) -> str:
+    # LNCS hyphenates by default, which is fine for prose and wrong for an
+    # e-mail address: it broke one across a line as "khu-shi.kumari2023@...".
+    extra = "<w:suppressAutoHyphens/>" if no_hyphen else ""
     return (
-        f'<w:p><w:pPr><w:pStyle w:val="{style}"/></w:pPr>'
+        f'<w:p><w:pPr><w:pStyle w:val="{style}"/>{extra}</w:pPr>'
         f"{runs(text, bold_prefix)}</w:p>"
     )
 
@@ -190,7 +198,8 @@ class Renderer:
         path = ROOT / spec["file"]
 
         px_w, px_h = png_size(path)
-        width_in = min(self.max_figure_inches, px_w / 300)
+        cap = min(self.max_figure_inches, spec.get("max_in", 99))
+        width_in = min(cap, px_w / 300)
         height_in = width_in * px_h / px_w
 
         rel_id = f"rIdFig{self.figure_n}"
@@ -302,7 +311,7 @@ class AIPRenderer(Renderer):
         segments: list[tuple[str, str]] = []
         for position, author in enumerate(C.AUTHORS):
             if position:
-                segments.append((" and ", ""))
+                segments.append((" and " if position == len(C.AUTHORS) - 1 else ", ", ""))
             segments.append((author["name"], ""))
             segments.append((f"{author['affil']}, {author['email']})", "super"))
         out += rich_para(self.styles["author"], segments)
@@ -361,12 +370,21 @@ class LNCSRenderer(Renderer):
     def front_matter(self) -> str:
         out = para(self.styles["title"], C.TITLE)
 
-        names = " and ".join(a["name"] for a in C.AUTHORS)
-        out += para(self.styles["author"], names)
+        segments: list[tuple[str, str]] = []
+        for position, author in enumerate(C.AUTHORS):
+            if position:
+                segments.append((" and " if position == len(C.AUTHORS) - 1 else ", ", ""))
+            segments.append((author["name"], ""))
+            segments.append((str(author["affil"]), "super"))
+        out += rich_para(self.styles["author"], segments)
 
-        for affil in C.AFFILIATIONS:
-            out += para(self.styles["affil"], affil)
-        out += para(self.styles["email"], C.EMAILS[0][1].split(": ", 1)[-1])
+        for index, affil in enumerate(C.AFFILIATIONS, start=1):
+            out += rich_para(
+                self.styles["affil"], [(str(index), "super"), (f" {affil}", "")]
+            )
+
+        emails = ", ".join(e.split(": ", 1)[-1] for _, e in C.EMAILS)
+        out += para(self.styles["email"], emails, no_hyphen=True)
 
         out += para(self.styles["abstract"], " " + C.ABSTRACT, bold_prefix="Abstract.")
         out += para(self.styles["keywords"], " " + C.KEYWORDS, bold_prefix="Keywords:")

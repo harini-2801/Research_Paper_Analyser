@@ -21,19 +21,28 @@ TITLE = (
 SHORT_TITLE = "A Knowledge Graph Framework for Scientific Literature Analysis"
 
 AUTHORS = [
-    {
-        "name": "AUTHOR ONE",
-        "affil": 1,
-        "email": "a",
-        "orcid": "0000-0000-0000-0000",
-    },
+    {"name": "Harini Sriram", "affil": 1, "email": "a", "orcid": ""},
+    {"name": "Anjaneya Sahu", "affil": 2, "email": "b", "orcid": ""},
+    {"name": "Khushi Kumari", "affil": 3, "email": "c", "orcid": ""},
 ]
 
+# All three authors are at the same institution but in different departments,
+# so the affiliation cannot be collapsed to one entry; each is numbered.
 AFFILIATIONS = [
-    "DEPARTMENT, INSTITUTION NAME, CITY, POSTAL CODE, COUNTRY.",
+    "Department of Computer Science and Engineering (Data Science), "
+    "Vellore Institute of Technology, Chennai, 600127, India.",
+    "Department of Computer Science and Engineering (Core), "
+    "Vellore Institute of Technology, Chennai, 600127, India.",
+    "Department of Computer Science and Engineering "
+    "(Artificial Intelligence and Machine Learning), "
+    "Vellore Institute of Technology, Chennai, 600127, India.",
 ]
 
-EMAILS = [("a", "Corresponding author: your.email@institution.edu")]
+EMAILS = [
+    ("a", "Corresponding author: harini.sriram2023@vitstudent.ac.in"),
+    ("b", "anjaneya.sahu2023@vitstudent.ac.in"),
+    ("c", "khushi.kumari2023@vitstudent.ac.in"),
+]
 
 KEYWORDS = (
     "Knowledge graphs, Scientific literature mining, Information extraction, "
@@ -73,19 +82,16 @@ BODY = [
         "exists only in the relationships between them."
     )),
     ("p", (
-        "Four of these relationships matter more than the rest. The first is simple "
-        "relatedness, which is harder than keyword overlap suggests: two groups can "
-        "attack an identical problem in vocabulary that shares almost nothing, while "
-        "two papers stuffed with the same terminology turn out to be unrelated. The "
-        "second is disagreement. When one paper reports 76.4% top-1 accuracy for a "
-        "baseline and another reports 71.1% for what appears to be the same "
-        "architecture on the same dataset, that discrepancy is a fact about the "
-        "literature, and it is invisible unless both numbers are in view "
-        "simultaneously. The third is absence. A research gap is defined by what is "
-        "missing, and no amount of careful reading of what is present will reveal it; "
-        "the whole collection has to be surveyed before the hole becomes visible. The "
-        "fourth is structure, the mental map that an experienced reader of a field "
-        "carries around, which is a graph whether or not anyone draws it."
+        "Four of these matter more than the rest. The first is relatedness, which is "
+        "harder than keyword overlap suggests: two groups can attack an identical "
+        "problem in vocabulary that shares almost nothing. The second is "
+        "disagreement. When one paper reports 76.4% top-1 accuracy for a baseline "
+        "and another reports 71.1% for what appears to be the same architecture on "
+        "the same dataset, that is a fact about the literature, invisible unless "
+        "both numbers are in view at once. The third is absence: a gap is defined by "
+        "what is missing, so the whole collection must be surveyed before the hole "
+        "appears. The fourth is structure, the map an experienced reader carries, "
+        "which is a graph whether or not anyone draws it."
     )),
     ("p", (
         "Large language models can be asked about all four, and they will answer "
@@ -125,42 +131,34 @@ BODY = [
 
     ("h2", "Document representation for scientific text"),
     ("p1", (
-        "Sentence-BERT [1] made dense sentence embeddings cheap enough to compute over "
-        "a whole corpus, and SciBERT [2] showed that pretraining on scientific text "
-        "rather than general web text improves nearly every downstream task in this "
-        "domain. SPECTER [3] is closest in spirit to our scoring component: it learns "
-        "document-level representations using the citation graph as a training signal, "
-        "so that papers citing one another land near each other in vector space. These "
-        "methods produce a single vector per document. That is their strength for "
-        "retrieval and their weakness for our purpose, because a single number "
-        "expressing how close two papers are cannot say whether they are close because "
-        "they share a dataset, a method, or an objective. We keep the dimensions "
-        "separate for exactly that reason."
+        "Sentence-BERT [1] made dense sentence embeddings cheap to compute over a whole "
+        "corpus, and SciBERT [2] showed that pretraining on scientific text improves "
+        "nearly every downstream task in this domain. SPECTER [3] is closest to our "
+        "scoring component, learning document representations with the citation graph "
+        "as training signal. All three produce a single vector per document, which is "
+        "their strength for retrieval and their weakness here: one number for how "
+        "close two papers are cannot say whether they are close on dataset, method or "
+        "objective. We keep the dimensions separate for that reason."
     )),
 
     ("h2", "Information extraction from papers"),
     ("p1", (
-        "SciERC [4] annotates scientific abstracts with entities and relations and "
-        "trains a multi-task model over them, and DocRED [5] extends relation "
-        "extraction to the document level where most relations in practice live. Both "
-        "require supervision we do not have for the entity types we care about, and "
-        "both operate on text that someone has already segmented. We found that the "
-        "segmentation step, which these papers reasonably treat as solved, was the "
-        "single largest source of failure in our own system."
+        "SciERC [4] annotates abstracts with entities and relations, and DocRED [5] "
+        "extends relation extraction to the document level. Both need supervision we "
+        "do not have for our entity types, and both assume text someone has already "
+        "segmented. That step, which these papers reasonably treat as solved, was the "
+        "largest single source of failure in our own system."
     )),
 
     ("h2", "Claim verification and contradiction"),
     ("p1", (
-        "FEVER [6] established the task of verifying a claim against retrieved "
-        "evidence, and SciFact [7] adapted it to scientific abstracts, labelling claims "
-        "as supported, refuted or lacking information. These are supervised tasks with "
-        "annotated claim-evidence pairs. Our setting is harder in one respect and "
-        "easier in another: we have no labels, but we also do not need to verify a "
-        "claim against the world, only to notice when two papers in the same collection "
-        "cannot both be right. Natural language inference models trained on MultiNLI "
-        "[8] transfer reasonably to this, which is why DeBERTa [9] appears in our "
-        "pipeline, but on sentences dense with figures they are unreliable, and a "
-        "numeric comparison is both cheaper and more trustworthy."
+        "FEVER [6] established claim verification against retrieved evidence and SciFact "
+        "[7] adapted it to scientific abstracts, both as supervised tasks with "
+        "annotated claim-evidence pairs. Our setting has no labels, but also does not "
+        "need a claim verified against the world, only the observation that two papers "
+        "cannot both be right. Models trained on MultiNLI [8] transfer reasonably, "
+        "which is why DeBERTa [9] appears here, but on sentences dense with figures "
+        "they are unreliable and numeric comparison is cheaper and more trustworthy."
     )),
 
     ("h2", "Citation analysis"),
@@ -204,15 +202,14 @@ BODY = [
         "the corpus and one hundred and eighty-six on another, from identical code."
     )),
     ("p", (
-        "What does work is relative font size. We compute the body text size for each "
-        "document individually as the character-weighted mode of font sizes on the "
-        "page, which came to 10.0pt for most papers in our corpus. Any line set "
-        "noticeably larger, typically 12.0pt, becomes a heading candidate. Because the "
-        "threshold is relative to the document rather than absolute, it transfers "
-        "across publishers with different house styles. Candidates are then matched "
-        "against anchored patterns covering the synonym sets above, after repairing a "
-        "common extraction artefact in which small-capital headings emerge with a space "
-        "after the first letter, so that I NTRODUCTION must be read as INTRODUCTION."
+        "What does work is relative font size. We take the body size for each document "
+        "as the character-weighted mode of font sizes on the page, 10.0pt for most of "
+        "our corpus, and treat any noticeably larger line, typically 12.0pt, as a "
+        "heading candidate. Being relative to the document rather than absolute, the "
+        "threshold transfers across house styles. Candidates are matched against "
+        "anchored patterns covering the synonym sets, after repairing an extraction "
+        "artefact that renders small-capital headings with a space after the first "
+        "letter, so I NTRODUCTION reads as INTRODUCTION."
     )),
     ("p", (
         "No document is discarded. When heading detection finds nothing at all, the "
@@ -269,18 +266,16 @@ BODY = [
         "maximal."
     )),
     ("p", (
-        "The weights are a stated prior and not a learned parameter, which we think is "
-        "defensible but want to be explicit about. They encode the judgement that what "
-        "a paper is trying to do and how it does it are jointly what make it that "
-        "paper, hence half the mass between them; that datasets and metrics are "
-        "concrete, checkable common ground, hence a further 0.40; and that shared "
-        "citations are genuine but lagging evidence, since a paper cannot cite work "
-        "published after it and reference lists are the noisiest region of a PDF to "
-        "parse. Two properties keep this from being arbitrary. The configuration is "
-        "validated at startup to sum to exactly 1.0 and the system refuses to run "
-        "otherwise, which guarantees the composite stays within [0, 1] and remains "
-        "comparable across runs. And the weights are adjustable at runtime, so any "
-        "ranking can be recomputed under a different prior without touching code."
+        "The weights are a stated prior, not a learned parameter, and we want to be "
+        "explicit about that. They encode three judgements: that what a paper is "
+        "trying to do and how it does it jointly make it that paper, hence half the "
+        "mass; that datasets and metrics are concrete, checkable common ground, hence "
+        "0.40; and that shared citations are genuine but lagging evidence, since a "
+        "paper cannot cite work published after it. Two properties keep this from "
+        "being arbitrary. The configuration is validated at startup to sum to exactly "
+        "1.0, and the system refuses to run otherwise, so the composite stays in "
+        "[0, 1] and comparable across runs; and the weights are adjustable at runtime, "
+        "so any ranking can be recomputed under a different prior."
     )),
     ("p", (
         "One implementation detail cost us several days and is worth recording. Cosine "
@@ -328,13 +323,12 @@ BODY = [
         "pairing is a combination of two concepts that no paper in the corpus has made."
     )),
     ("p", (
-        "Absent pairings are the weakest evidence by a wide margin, because most pairs "
-        "of concepts have never been combined and most of them never should be. We "
-        "therefore require that both concept communities contain at least three papers, "
-        "that they do not already overlap, and that the two groups are themselves "
-        "related; if the papers using X have nothing to do with the papers using Y, the "
-        "fact that nobody combined them carries no information. At most one such gap "
-        "can reach the final list."
+        "Absent pairings are much the weakest evidence, since most pairs of concepts "
+        "have never been combined and most never should be. We require both concept "
+        "communities to hold at least three papers, not to overlap already, and to be "
+        "related to each other: if the papers using X have nothing to do with those "
+        "using Y, nobody combining them carries no information. At most one such gap "
+        "reaches the final list."
     )),
     ("p", (
         "An early version of this stage returned around sixty gaps. That is not a "
@@ -473,17 +467,14 @@ BODY = [
         "ingestion errors rather than skipped silently, but no OCR is attempted."
     )),
     ("p", (
-        "Pair scoring is quadratic in corpus size. At thirty papers this is "
-        "irrelevant, and at a few hundred it remains tractable, but the approach as "
-        "described would not scale to a corpus of tens of thousands without "
-        "approximate nearest-neighbour retrieval to prune the candidate set first."
+        "Pair scoring is quadratic. That is irrelevant at thirty papers and tractable at "
+        "a few hundred, but tens of thousands would need approximate "
+        "nearest-neighbour retrieval to prune candidates first."
     )),
     ("p", (
-        "Finally, the contradiction result reported above is a single data point from a "
-        "single corpus in a single field. The gates are tuned conservatively and we "
-        "have shown they preserve recall on planted contradictions, but we have not "
-        "shown what their recall is on real ones, because we have no labelled set of "
-        "real ones to measure against."
+        "Finally, the contradiction result is one data point from one corpus in one "
+        "field. The gates preserve recall on planted contradictions, but we cannot "
+        "say what their recall is on real ones without a labelled set of real ones."
     )),
 
     # ------------------------------------------------------------------
@@ -500,14 +491,11 @@ BODY = [
         "that it also produced no confirmed findings on real papers."
     )),
     ("p", (
-        "The design commitment throughout was that an answer a reader cannot verify is "
-        "not worth giving. That constraint ruled out several easier architectures and "
-        "cost us accuracy in places. We think it is the right trade for a tool intended "
-        "to be used on literature a researcher will then go and read for themselves."
-    )),
-    ("p", (
-        "The implementation, the thirty-paper corpus and the evaluation scripts are "
-        "available so that the figures above can be reproduced."
+        "The commitment throughout was that an answer a reader cannot verify is not "
+        "worth giving. That ruled out several easier architectures and cost accuracy "
+        "in places, which we think is the right trade for a tool used on literature a "
+        "researcher will then go and read. The implementation, the corpus and the "
+        "evaluation scripts are available so the figures above can be reproduced."
     )),
 ]
 
@@ -557,14 +545,14 @@ TABLES = {"table1": TABLE1, "table2": TABLE2, "table3": TABLE3}
 
 FIGURES = {
     "fig1": {
-        "file": "paper/figures/fig1_pipeline.png",
+        "file": "paper/figures/fig1_pipeline.png", "max_in": 5.5,
         "caption": "The eleven pipeline stages. Ordering is forced by data "
                    "dependency: three of the five scoring dimensions are cosine "
                    "similarities over entity vectors, so embedding must precede "
                    "scoring.",
     },
     "fig2": {
-        "file": "paper/figures/fig2_heatmap.png",
+        "file": "paper/figures/fig2_heatmap.png", "max_in": 3.3,
         "caption": "Composite relationship score for all 435 document pairs, "
                    "ordered by topical cluster. Blocks on the diagonal are "
                    "within-cluster pairs. The pale lower-left region is cluster A "
@@ -572,14 +560,14 @@ FIGURES = {
                    "is masked; a document is not scored against itself.",
     },
     "fig3": {
-        "file": "paper/figures/fig3_separation.png",
+        "file": "paper/figures/fig3_separation.png", "max_in": 3.4,
         "caption": "Score distributions for within-cluster and cross-cluster "
                    "pairs. The separation of 0.132 between the means indicates "
                    "the score is discriminative, not merely correctly ordered at "
                    "the top of the ranking.",
     },
     "fig4": {
-        "file": "paper/figures/fig4_sections.png",
+        "file": "paper/figures/fig4_sections.png", "max_in": 3.4,
         "caption": "Sections recovered across the thirty documents. Results "
                    "sections are weakest at 21 of 30, usually because they are "
                    "folded into a section headed Experiments.",
