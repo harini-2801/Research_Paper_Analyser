@@ -40,3 +40,6 @@ Thumbs.db
 
 # Pipeline scratch written while generating the paper figures
 paper/_run/
+
+# Word lock files
+~$*
