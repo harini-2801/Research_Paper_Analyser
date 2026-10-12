@@ -94,15 +94,13 @@ BODY = [
         "which is a graph whether or not anyone draws it."
     )),
     ("p", (
-        "Large language models can be asked about all four, and they will answer "
-        "fluently. The difficulty is that the answer arrives without provenance. A "
-        "reviewer cannot check it, a student cannot learn from it, and a wrong answer "
-        "is indistinguishable in tone from a right one. We took the opposite approach. "
-        "Every number this system produces decomposes into named components, and every "
-        "contradiction and gap it reports carries the document, section, page and exact "
-        "sentence that gave rise to it. A language model appears in the pipeline only "
-        "at the end, and only to phrase findings that have already been established by "
-        "other means."
+        "Large language models answer all four fluently, but without provenance: a "
+        "reviewer cannot check the answer, and a wrong one is indistinguishable in "
+        "tone from a right one. We took the opposite approach. Every number here "
+        "decomposes into named components, and every contradiction and gap carries the "
+        "document, section, page and sentence that produced it. A language model "
+        "appears only at the end, to phrase findings already established by other "
+        "means."
     )),
     ("p", "Our contributions are as follows."),
     ("bullet", (
@@ -164,10 +162,10 @@ BODY = [
     ("h2", "Citation analysis"),
     ("p1", (
         "Bibliographic coupling [10] and co-citation [11] predate all of the above by "
-        "several decades and remain useful. Two papers that cite the same prior work "
-        "are related even when they share no vocabulary at all, which is precisely the "
-        "signal that embedding-based similarity misses. We include it as one of our "
-        "five dimensions, though at a lower weight, for reasons discussed in Section 3."
+        "decades and remain useful: two papers citing the same prior work are related "
+        "even when they share no vocabulary, which is exactly the signal "
+        "embedding similarity misses. We keep it as one of the five dimensions, at a "
+        "lower weight."
     )),
 
     # ------------------------------------------------------------------
@@ -212,21 +210,19 @@ BODY = [
         "letter, so I NTRODUCTION reads as INTRODUCTION."
     )),
     ("p", (
-        "No document is discarded. When heading detection finds nothing at all, the "
-        "paper is divided into three-page chunks labelled as unstructured body text and "
-        "continues through every subsequent stage. Which route a document took is "
-        "recorded on the document itself, so a degraded result is visible rather than "
-        "silent."
+        "No document is discarded. If heading detection finds nothing, the paper is "
+        "divided into three-page chunks marked as unstructured and continues through "
+        "every later stage. The route taken is recorded on the document, so a degraded "
+        "result is visible rather than silent."
     )),
 
     ("h2", "Entity extraction and the missing-section problem"),
     ("p1", (
         "Entities are extracted by rule: gazetteers for datasets, metrics and model "
-        "names, and cue-phrase patterns for objectives, limitations and explicitly "
-        "stated gaps. A sentence containing both a metric mention and a number becomes "
-        "a quantitative result. This needs no training data and no API key, which was a "
-        "design requirement rather than a convenience, since the system must run on "
-        "unpublished manuscripts that cannot be sent to a third party."
+        "names, cue-phrase patterns for objectives, limitations and stated gaps, and a "
+        "metric mention beside a number for a quantitative result. This needs no "
+        "training data and no API key, a design requirement rather than a convenience, "
+        "since the system must run on manuscripts that cannot be sent to a third party."
     )),
     ("p", (
         "The section a sentence comes from is evidence about what it contains. An "
@@ -306,7 +302,8 @@ BODY = [
         "numbers for the straightforward reason that they measured different things."
     )),
     ("p", (
-        "Candidate pairs are restricted to documents that already share a bridge "
+        "Documents, entities and bridge concepts are held in a directed multigraph built "
+        "with NetworkX [18]. Candidate pairs are restricted to documents sharing a bridge "
         "concept or score above a relatedness threshold. Unrelated papers cannot "
         "contradict one another, and the restriction keeps this stage from becoming "
         "quadratic in corpus size."
@@ -343,24 +340,24 @@ BODY = [
 
     ("p1", (
         "A randomly drawn corpus cannot evaluate this system. Contradiction detection "
-        "only fires when two papers report the same metric on the same dataset, and a "
-        "relationship score can only be judged if the corpus contains both pairs that "
-        "ought to rank highly and pairs that ought not. A random sample of thirty "
-        "papers supplies almost no shared benchmarks and no negative control, and "
-        "against such a corpus a scorer that rated every pair as highly related would "
-        "appear to perform well."
+        "fires only when two papers report the same metric on the same dataset, and a "
+        "relationship score can be judged only if the corpus holds both pairs that "
+        "ought to rank highly and pairs that ought not. Thirty random papers supply "
+        "almost no shared benchmarks and no negative control, against which a scorer "
+        "calling every pair related would appear to do well."
     )),
     ("p", (
         "We therefore built the corpus as four deliberate clusters of real arXiv "
-        "papers, shown in Table 2. Cluster membership is the ground truth: two papers "
-        "in the same cluster address the same problem on overlapping benchmarks and "
-        "should score as related, while cluster A against cluster D shares virtually "
-        "nothing and serves as the negative control. Clusters A and C overlap on "
-        "dataset but differ on method, which tests whether the score distinguishes "
-        "\"same benchmark\" from \"same approach\". The papers cite one another densely, "
-        "and several report differing values for identical baselines, which is a "
-        "well-documented phenomenon in this literature rather than something we "
-        "introduced."
+        "papers, shown in Table 2. Cluster A is built around residual and convolutional "
+        "architectures [14], cluster B around the Transformer [12] and the masked "
+        "language models that followed it [13], and cluster D around retrieval and "
+        "knowledge-graph work [16, 17]. Cluster membership is the ground truth: same-cluster "
+        "papers address the same problem on overlapping benchmarks and should score as "
+        "related, while cluster A against cluster D shares virtually nothing and serves "
+        "as the negative control. Clusters A and C overlap on dataset but differ on "
+        "method, testing whether the score separates \"same benchmark\" from \"same "
+        "approach\". These papers cite one another densely and several report differing "
+        "values for identical baselines."
     )),
     ("table2", None),
 
@@ -401,8 +398,8 @@ BODY = [
     ("p", (
         "The two errors in the top ten are instructive rather than embarrassing. Both "
         "pair a self-supervised vision paper from cluster C with a convolutional "
-        "architecture paper from cluster A, and both are arguably correct: MoCo and "
-        "ResNet genuinely are closely related, since MoCo evaluates its representations "
+        "architecture paper from cluster A, and both are arguably correct: MoCo [15] "
+        "and ResNet [14] genuinely are closely related, since MoCo evaluates its representations "
         "on ImageNet using a ResNet backbone. Our cluster assignment treats them as "
         "different because one studies architecture and the other studies pretraining. "
         "The score is picking up a real relationship that our ground truth, by design, "
@@ -430,6 +427,7 @@ BODY = [
         "experimental condition that the detector correctly declines to call a "
         "contradiction."
     )),
+    ("fig5", None),
     ("p", (
         "Gap discovery returned five gaps from 1,037 extracted entities and 92 bridge "
         "concepts. The resulting knowledge graph contains 1,159 nodes and 2,047 edges. "
@@ -441,23 +439,21 @@ BODY = [
 
     ("h2", "Runtime"),
     ("p1", (
-        "A full analysis of thirty papers completes in approximately 33 seconds on a "
-        "four-core CPU with no GPU and no network access, once the embedding model is "
-        "resident. Embedding dominates at roughly half the total. Enabling the "
-        "inference-based contradiction detector increases this substantially, and we "
-        "found it necessary to batch the cross-encoder calls and cap the batch size, "
-        "since the unbatched implementation issued one model call per claim pair and "
-        "exhausted CPU memory on a loaded machine."
+        "A full analysis of thirty papers takes about 33 seconds on a four-core CPU "
+        "with no GPU and no network, once the embedding model is resident; embedding "
+        "is roughly half of that. The inference-based detector raises it "
+        "substantially, and the cross-encoder calls had to be batched with a capped "
+        "batch size, since one model call per claim pair exhausted CPU memory on a "
+        "loaded machine."
     )),
 
     # ------------------------------------------------------------------
     ("h1", "Limitations"),
 
     ("p1", (
-        "The weights are asserted rather than learned. Learning them would require a "
-        "labelled relatedness dataset for this corpus, which does not exist, and we "
-        "regard the interpretability of the current scheme as partial compensation "
-        "rather than a full answer."
+        "The weights are asserted rather than learned. Learning them needs a labelled "
+        "relatedness dataset for this corpus, which does not exist; we regard the "
+        "scheme's interpretability as partial compensation, not a full answer."
     )),
     ("p", (
         "Extraction is rule-based and English-only. Gazetteers transfer poorly to "
@@ -552,7 +548,7 @@ FIGURES = {
                    "scoring.",
     },
     "fig2": {
-        "file": "paper/figures/fig2_heatmap.png", "max_in": 3.3,
+        "file": "paper/figures/fig2_heatmap.png", "max_in": 3.0,
         "caption": "Composite relationship score for all 435 document pairs, "
                    "ordered by topical cluster. Blocks on the diagonal are "
                    "within-cluster pairs. The pale lower-left region is cluster A "
@@ -560,14 +556,22 @@ FIGURES = {
                    "is masked; a document is not scored against itself.",
     },
     "fig3": {
-        "file": "paper/figures/fig3_separation.png", "max_in": 3.4,
+        "file": "paper/figures/fig3_separation.png", "max_in": 3.1,
         "caption": "Score distributions for within-cluster and cross-cluster "
                    "pairs. The separation of 0.132 between the means indicates "
                    "the score is discriminative, not merely correctly ordered at "
                    "the top of the ranking.",
     },
+    "fig5": {
+        "file": "paper/figures/fig5_interface.png", "max_in": 5.4,
+        "caption": "A research gap in the generated report. For a stated gap the "
+                   "finding is the author's own sentence, so claim and quoted "
+                   "evidence coincide; the trail adds the provenance - document, "
+                   "section, page - that makes it checkable. Every contradiction "
+                   "and gap carries one.",
+    },
     "fig4": {
-        "file": "paper/figures/fig4_sections.png", "max_in": 3.4,
+        "file": "paper/figures/fig4_sections.png", "max_in": 3.1,
         "caption": "Sections recovered across the thirty documents. Results "
                    "sections are weakest at 21 of 30, usually because they are "
                    "folded into a section headed Experiments.",
@@ -615,13 +619,13 @@ REFERENCES = [
     "relationship between two documents. Journal of the American Society for "
     "Information Science 24(4), 265–269 (1973).",
 
-    "Devlin, J., Chang, M.-W., Lee, K., Toutanova, K.: BERT: Pre-training of Deep "
-    "Bidirectional Transformers for Language Understanding. In: Proceedings of "
-    "NAACL-HLT, pp. 4171–4186 (2019).",
-
     "Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A.N., "
     "Kaiser, Ł., Polosukhin, I.: Attention Is All You Need. In: Advances in Neural "
     "Information Processing Systems 30, pp. 5998–6008 (2017).",
+
+    "Devlin, J., Chang, M.-W., Lee, K., Toutanova, K.: BERT: Pre-training of Deep "
+    "Bidirectional Transformers for Language Understanding. In: Proceedings of "
+    "NAACL-HLT, pp. 4171–4186 (2019).",
 
     "He, K., Zhang, X., Ren, S., Sun, J.: Deep Residual Learning for Image "
     "Recognition. In: Proceedings of CVPR, pp. 770–778 (2016).",

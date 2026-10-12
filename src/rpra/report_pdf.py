@@ -53,6 +53,30 @@ _SERIF_ITALIC = "times-italic"
 _MONO = "courier"
 
 
+# PyMuPDF's built-in Times faces are Latin-1 only. Every character outside that
+# set is drawn as the notdef box, which in this font looks like a middle dot -
+# so a curly quote, an ellipsis or an arrow silently became "·" in the report.
+# Every string is mapped through this on its way to the page, rather than at the
+# call sites, because the call sites are where it went wrong: _clean() already
+# normalised quotes, and then the quotation helper wrapped the result in curly
+# quotes again, after the cleaning had happened.
+_FONT_SAFE = {
+    ord("“"): '"', ord("”"): '"',
+    ord("‘"): "'", ord("’"): "'",
+    ord("…"): "...",
+    ord("↔"): "<->", ord("→"): "->", ord("←"): "<-",
+    ord("–"): "-", ord("—"): "-",
+    ord("−"): "-", ord(" "): " ",
+    ord("•"): "·",
+    ord("≥"): ">=", ord("≤"): "<=", ord("×"): "x",
+}
+
+
+def _font_safe(text: str) -> str:
+    """Map characters the base-14 Times faces cannot draw onto ones they can."""
+    return str(text).translate(_FONT_SAFE)
+
+
 def _clean(text: str, limit: int | None = None) -> str:
     """
     Normalise extracted text for display.
@@ -70,7 +94,7 @@ def _clean(text: str, limit: int | None = None) -> str:
     out = re.sub(r"(\d)\s*\.\s*(\d)", r"\1.\2", out)
     out = re.sub(r"\s+", " ", out).strip()
     if limit and len(out) > limit:
-        out = out[: limit - 1].rstrip() + "…"
+        out = out[: limit - 3].rstrip() + "..."
     return out
 
 
@@ -97,7 +121,7 @@ class _Report:
     def _running_head(self) -> None:
         self.page.insert_text(
             (_MARGIN, _MARGIN - 18),
-            self.title,
+            _font_safe(self.title),
             fontname=_SERIF_ITALIC,
             fontsize=8,
             color=_INK_MUTED,
@@ -121,7 +145,7 @@ class _Report:
                 continue
             page.insert_text(
                 (_WIDTH / 2 - 10, _HEIGHT - 32),
-                str(index),
+                _font_safe(str(index)),
                 fontname=_SERIF,
                 fontsize=9,
                 color=_INK_MUTED,
@@ -136,7 +160,7 @@ class _Report:
         self.ensure(size + 26)
         self.page.insert_text(
             (_MARGIN, self.y + size),
-            text,
+            _font_safe(text),
             fontname=_SERIF_BOLD,
             fontsize=size,
             color=_INK,
@@ -154,7 +178,7 @@ class _Report:
         self.ensure(18)
         self.page.insert_text(
             (_MARGIN, self.y + 8),
-            text.upper(),
+            _font_safe(text.upper()),
             fontname=_SERIF_BOLD,
             fontsize=7.5,
             color=_INK_MUTED,
@@ -186,7 +210,7 @@ class _Report:
             self.ensure(line_height)
             self.page.insert_text(
                 (_MARGIN + indent, self.y + size),
-                line,
+                _font_safe(line),
                 fontname=font,
                 fontsize=size,
                 color=color,
@@ -198,7 +222,7 @@ class _Report:
             self.ensure(line_height)
             self.page.insert_text(
                 (_MARGIN + indent, self.y + size),
-                line,
+                _font_safe(line),
                 fontname=font,
                 fontsize=size,
                 color=color,
@@ -209,7 +233,7 @@ class _Report:
         """An indented pull quote with a rule, then its citation."""
         start_y = self.y
         start_page = self.page_number
-        self.paragraph(f"“{text}”", size=9, font=_SERIF_ITALIC, indent=16)
+        self.paragraph(f'"{text}"', size=9, font=_SERIF_ITALIC, indent=16)
         # Only rule the quote when it did not straddle a page break.
         if self.page_number == start_page:
             self.page.draw_line(
@@ -226,14 +250,14 @@ class _Report:
             self.ensure(14)
             self.page.insert_text(
                 (_MARGIN, self.y + 8),
-                key,
+                _font_safe(key),
                 fontname=_SERIF_BOLD,
                 fontsize=8.5,
                 color=_INK_SOFT,
             )
             self.page.insert_text(
                 (_MARGIN + 132, self.y + 8),
-                value,
+                _font_safe(value),
                 fontname=_SERIF,
                 fontsize=8.5,
                 color=_INK,
@@ -246,7 +270,8 @@ class _Report:
         bar_x = _MARGIN + 132
         bar_w = 190.0
         self.page.insert_text(
-            (_MARGIN, self.y + 8), label, fontname=_SERIF, fontsize=8.5, color=_INK_SOFT
+            (_MARGIN, self.y + 8), _font_safe(label),
+            fontname=_SERIF, fontsize=8.5, color=_INK_SOFT
         )
         self.page.draw_rect(
             fitz.Rect(bar_x, self.y + 2, bar_x + bar_w, self.y + 9),
@@ -357,7 +382,7 @@ def _relationships(report: _Report, scores: list[RelationshipScore],
     for score in sorted(scores, key=lambda s: s.composite_score, reverse=True)[:limit]:
         report.ensure(64)
         report.paragraph(
-            f"{_clean(titles.get(score.doc_id_a, score.doc_id_a), 60)}  ↔  "
+            f"{_clean(titles.get(score.doc_id_a, score.doc_id_a), 60)}  <->  "
             f"{_clean(titles.get(score.doc_id_b, score.doc_id_b), 60)}",
             size=9.5, font=_SERIF_BOLD,
         )
