@@ -13,8 +13,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import importlib.util
 import os
+import platform
+import sys
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -513,6 +517,141 @@ async def get_status() -> dict[str, Any]:
             "extraction_backend": current_settings.pipeline.extraction_backend,
             "weights": current_settings.relationship_scoring.weights.model_dump(),
         },
+    }
+
+
+_STARTED_AT = time.time()
+
+
+def _dir_usage(path: Path) -> tuple[int, int]:
+    """File count and total bytes under `path`; (0, 0) if it does not exist."""
+    if not path.exists():
+        return 0, 0
+    files = [f for f in path.rglob("*") if f.is_file()]
+    return len(files), sum(f.stat().st_size for f in files)
+
+
+@app.get("/api/backend")
+async def get_backend_info() -> dict[str, Any]:
+    """
+    What the server itself is doing, as opposed to what the analysis found.
+
+    The other endpoints return analysis results, which a saved demo bundle can
+    imitate exactly. Everything here is read from the running process and its
+    disk, so it can only have come from a live backend.
+    """
+    result, running, last_error = state.snapshot()
+    with state.lock:
+        events = list(state.events)
+
+    storage = current_settings.storage
+    corpus_dir = Path(storage.corpus_input_path)
+    analysed = {Path(d.file_path).name for d in result.documents} if result else set()
+
+    corpus = []
+    if corpus_dir.exists():
+        for f in sorted(corpus_dir.glob("*.pdf")):
+            info = f.stat()
+            corpus.append(
+                {
+                    "filename": f.name,
+                    "size_bytes": info.st_size,
+                    "modified": info.st_mtime,
+                    "analysed": f.name in analysed,
+                }
+            )
+
+    storage_rows = []
+    for label, raw in (
+        ("Corpus", storage.corpus_input_path),
+        ("Output", storage.output_path),
+    ):
+        count, size = _dir_usage(Path(raw))
+        storage_rows.append(
+            {"label": label, "path": str(Path(raw).resolve()), "files": count, "bytes": size}
+        )
+    for label, raw in (
+        ("Knowledge graph", storage.graph_path),
+        ("Embeddings cache", storage.embeddings_path),
+        ("Pipeline log", storage.log_path),
+    ):
+        f = Path(raw)
+        storage_rows.append(
+            {
+                "label": label,
+                "path": str(f.resolve()),
+                "files": 1 if f.exists() else 0,
+                "bytes": f.stat().st_size if f.exists() else 0,
+            }
+        )
+
+    latest: dict[str, dict] = {}
+    for ev in events:
+        latest[ev["stage"]] = ev
+    stages = [
+        {
+            "stage": ev["stage"],
+            "status": ev["status"],
+            "message": ev["message"],
+            "elapsed_seconds": ev.get("elapsed_seconds"),
+        }
+        for ev in latest.values()
+    ]
+
+    entity_counts: dict[str, int] = {}
+    if result:
+        for e in result.entities:
+            key = e.entity_type.value
+            entity_counts[key] = entity_counts.get(key, 0) + 1
+
+    row_counts = {
+        "/api/documents": len(result.documents) if result else 0,
+        "/api/scores": len(result.scores) if result else 0,
+        "/api/contradictions": len(result.contradictions) if result else 0,
+        "/api/gaps": len(result.gaps) if result else 0,
+        "/api/entities": len(result.entities) if result else 0,
+        "/api/graph": result.knowledge_graph.node_count() if result and result.knowledge_graph else 0,
+    }
+
+    return {
+        "runtime": {
+            "service": os.environ.get("RENDER_SERVICE_NAME") or "local",
+            "url": os.environ.get("RENDER_EXTERNAL_URL") or "",
+            "on_render": bool(os.environ.get("RENDER")),
+            "git_commit": (os.environ.get("RENDER_GIT_COMMIT") or "")[:7],
+            "python": platform.python_version(),
+            "platform": f"{platform.system()} {platform.machine()}",
+            "pid": os.getpid(),
+            "uptime_seconds": round(time.time() - _STARTED_AT),
+            "status": "running" if running else "idle",
+            "last_error": last_error,
+            "websocket_clients": len(manager.active),
+        },
+        "libraries": [
+            {"name": name, "installed": importlib.util.find_spec(name) is not None}
+            for name in ("torch", "transformers", "sentence_transformers", "openai", "sklearn")
+        ],
+        "settings": {
+            "extraction_backend": current_settings.pipeline.extraction_backend,
+            "embedding_model": current_settings.embedding.model,
+            "nli_model": current_settings.nli.model,
+            "llm_provider": current_settings.llm.provider,
+            "openai_key_set": bool(os.environ.get("OPENAI_API_KEY")),
+            "seed_corpus": os.environ.get("RPRA_SEED_CORPUS", "(default)"),
+        },
+        "last_run": (
+            {
+                **result.summary(),
+                "ingestion_error_details": result.ingestion_errors[:20],
+            }
+            if result
+            else None
+        ),
+        "stages": stages,
+        "storage": storage_rows,
+        "corpus": corpus,
+        "entity_counts": entity_counts,
+        "endpoints": [{"path": p, "rows": n} for p, n in row_counts.items()],
     }
 
 
