@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RPRA Backend</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/rpra.css" />
+<style>
+  html, body { height: auto; overflow: auto; }
+  .page { max-width: 1040px; margin: 0 auto; padding: 28px 20px 60px; position: relative; }
+  .page__head { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+  .page__title { font-family: var(--font-display); font-size: 22px; margin: 0; color: var(--ink-primary); }
+  .page__links { display: flex; gap: 10px; align-items: center; }
+  .page__links a { color: var(--accent); font-size: 12.5px; text-decoration: none; }
+  .page__links a:hover { text-decoration: underline; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); gap: 13px; align-items: start; }
+  .grid .card + .card { margin-top: 0; }
+  .card--wide { grid-column: 1 / -1; }
+  .table td { word-break: break-word; }
+  @media (max-width: 520px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="page__head">
+    <h1 class="page__title">RPRA backend</h1>
+    <div class="page__links">
+      <span class="hint" id="refreshed"></span>
+      <a href="/docs">API docs</a>
+      <a href="/api/backend">Raw JSON</a>
+      <button class="btn btn--ghost" id="reload">Refresh</button>
+    </div>
+  </div>
+  <div class="grid" id="area"><p class="hint">Loading&hellip;</p></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  function esc(v) {
+    return String(v == null ? "" : v)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  function fmtBytes(n) {
+    if (!n) return "0 B";
+    var u = ["B", "KB", "MB", "GB"];
+    var i = Math.min(u.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+    return (n / Math.pow(1024, i)).toFixed(i ? 1 : 0) + " " + u[i];
+  }
+
+  function fmtDuration(s) {
+    if (s < 90) return Math.round(s) + " s";
+    if (s < 5400) return Math.round(s / 60) + " min";
+    return (s / 3600).toFixed(1) + " h";
+  }
+
+  // `rows` cells are pre-escaped HTML; callers escape what they pass in.
+  function table(title, hint, head, rows, wide) {
+    return '<div class="card' + (wide ? " card--wide" : "") + '"><div class="card__head"><span class="eyebrow">' +
+      esc(title) + "</span>" + (hint ? '<span class="hint">' + esc(hint) + "</span>" : "") + "</div>" +
+      '<table class="table"><thead><tr>' +
+      head.map(function (h) { return "<th>" + esc(h) + "</th>"; }).join("") +
+      "</tr></thead><tbody>" +
+      (rows.length
+        ? rows.map(function (r) {
+            return "<tr>" + r.map(function (c, i) {
+              return "<td" + (i ? ' class="mono"' : "") + ">" + c + "</td>";
+            }).join("") + "</tr>";
+          }).join("")
+        : '<tr><td colspan="' + head.length + '" style="color:var(--ink-muted)">Nothing yet</td></tr>') +
+      "</tbody></table></div>";
+  }
+
+  async function load() {
+    var area = document.getElementById("area");
+    var info;
+    try {
+      var res = await fetch("/api/backend");
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      info = await res.json();
+    } catch (e) {
+      area.innerHTML = '<p class="hint">Could not read /api/backend: ' + esc(e.message) + "</p>";
+      return;
+    }
+
+    var rt = info.runtime, st = info.settings, run = info.last_run;
+    var html = "";
+
+    html += table("Server", rt.on_render ? "running on Render" : "running locally", ["Property", "Value"], [
+      ["Service", esc(rt.service)],
+      ["Public URL", esc(rt.url || "—")],
+      ["Commit", esc(rt.git_commit || "—")],
+      ["Python", esc(rt.python)],
+      ["Platform", esc(rt.platform)],
+      ["Process ID", esc(rt.pid)],
+      ["Uptime", fmtDuration(rt.uptime_seconds)],
+      ["Pipeline", esc(rt.status) + (rt.last_error ? " — " + esc(rt.last_error) : "")],
+      ["WebSocket clients", esc(rt.websocket_clients)]
+    ]);
+
+    html += table("Configuration", "as the server resolved it", ["Setting", "Value"], [
+      ["Extraction backend", esc(st.extraction_backend)],
+      ["Embedding model", esc(st.embedding_model)],
+      ["NLI model", esc(st.nli_model)],
+      ["LLM provider", esc(st.llm_provider)],
+      ["OpenAI key set", st.openai_key_set ? "yes" : "no"],
+      ["RPRA_SEED_CORPUS", esc(st.seed_corpus)]
+    ].concat(info.libraries.map(function (l) {
+      return ["Library: " + esc(l.name), l.installed ? "installed" : "not installed"];
+    })));
+
+    html += table("Last run", run ? "" : "no run since the server started", ["Measure", "Value"], run ? [
+      ["Documents", esc(run.documents)],
+      ["Entities", esc(run.entities)],
+      ["Relations", esc(run.relations)],
+      ["Scored pairs", esc(run.scored_pairs)],
+      ["Graph", esc(run.kg_nodes) + " nodes · " + esc(run.kg_edges) + " edges"],
+      ["Embedding backend", esc(run.embedding_backend)],
+      ["Extraction backend", esc(run.extraction_backend)],
+      ["Duration", esc(run.elapsed_seconds) + " s"],
+      ["Ingestion errors", esc(run.ingestion_errors)]
+    ] : []);
+
+    html += table("Endpoints", "rows each returns right now", ["Path", "Rows"],
+      info.endpoints.map(function (e) { return [esc(e.path), esc(e.rows)]; }));
+
+    html += table("Pipeline stages", "latest event per stage", ["Stage", "Status", "Message", "Elapsed"],
+      info.stages.map(function (s) {
+        return [esc(s.stage), esc(s.status), esc(s.message),
+          s.elapsed_seconds == null ? "" : esc(Number(s.elapsed_seconds).toFixed(1)) + " s"];
+      }), true);
+
+    html += table("Entities by type", "", ["Type", "Count"],
+      Object.keys(info.entity_counts).sort(function (a, b) {
+        return info.entity_counts[b] - info.entity_counts[a];
+      }).map(function (k) { return [esc(k), esc(info.entity_counts[k])]; }));
+
+    html += table("Storage", "on the server's disk", ["Location", "Path", "Files", "Size"],
+      info.storage.map(function (r) {
+        return [esc(r.label), esc(r.path), esc(r.files), fmtBytes(r.bytes)];
+      }), true);
+
+    html += table("Corpus files", info.corpus.length + " PDFs on disk", ["File", "Size", "Modified", "Analysed"],
+      info.corpus.map(function (f) {
+        return [esc(f.filename), fmtBytes(f.size_bytes),
+          esc(new Date(f.modified * 1000).toLocaleString()), f.analysed ? "yes" : "no"];
+      }), true);
+
+    area.innerHTML = html;
+    document.getElementById("refreshed").textContent = "updated " + new Date().toLocaleTimeString();
+  }
+
+  document.getElementById("reload").addEventListener("click", load);
+  load();
+  setInterval(load, 10000);
+})();
+</script>
+</body>
+</html>

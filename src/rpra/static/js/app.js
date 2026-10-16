@@ -396,7 +396,6 @@
     if (results[4].status === "fulfilled") state.graph = results[4].value;
 
     renderEverything();
-    if ($("panel-backend").getAttribute("data-active") === "true") renderBackend();
   }
 
   function renderEverything() {
@@ -1359,132 +1358,6 @@
   }
 
   // ------------------------------------------------------------------
-  // Backend tab
-  // ------------------------------------------------------------------
-
-  function fmtBytes(n) {
-    if (!n) return "0 B";
-    var units = ["B", "KB", "MB", "GB"];
-    var i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
-    return (n / Math.pow(1024, i)).toFixed(i ? 1 : 0) + " " + units[i];
-  }
-
-  function fmtDuration(seconds) {
-    if (seconds == null) return "";
-    if (seconds < 90) return Math.round(seconds) + " s";
-    if (seconds < 5400) return Math.round(seconds / 60) + " min";
-    return (seconds / 3600).toFixed(1) + " h";
-  }
-
-  function backendTable(title, hint, head, rows) {
-    return '<div class="card"><div class="card__head"><span class="eyebrow">' + esc(title) + "</span>" +
-      (hint ? '<span class="hint">' + esc(hint) + "</span>" : "") + "</div>" +
-      '<table class="table"><thead><tr>' +
-      head.map(function (h) { return "<th>" + esc(h) + "</th>"; }).join("") +
-      "</tr></thead><tbody>" +
-      (rows.length
-        ? rows.map(function (row) {
-            return "<tr>" + row.map(function (cell, i) {
-              return '<td' + (i ? ' class="mono"' : "") + ">" + (cell == null ? "" : cell) + "</td>";
-            }).join("") + "</tr>";
-          }).join("")
-        : '<tr><td colspan="' + head.length + '" style="color:var(--ink-muted)">Nothing yet</td></tr>') +
-      "</tbody></table></div>";
-  }
-
-  async function renderBackend() {
-    var area = $("backend-area");
-
-    // The saved demo bundle imitates every analysis endpoint, so this tab only
-    // reports on a server that is actually answering.
-    if (state.demoMode) {
-      area.innerHTML = emptyState(ICON_SEARCH, "No backend connected",
-        "You are looking at a saved analysis. Connect an API to see its runtime, storage, corpus files and endpoint data here.");
-      return;
-    }
-
-    var info;
-    try {
-      info = await api("/api/backend");
-    } catch (e) {
-      area.innerHTML = emptyState(ICON_SEARCH, "Backend info unavailable",
-        "The server responded but has no /api/backend endpoint. It is probably running an older build — redeploy it.");
-      return;
-    }
-
-    var rt = info.runtime, st = info.settings;
-    var html = "";
-
-    html += backendTable("Server", API_BASE || window.location.origin, ["Property", "Value"], [
-      ["Service", esc(rt.service) + (rt.on_render ? " (Render)" : "")],
-      ["Public URL", esc(rt.url || "—")],
-      ["Commit", esc(rt.git_commit || "—")],
-      ["Python", esc(rt.python)],
-      ["Platform", esc(rt.platform)],
-      ["Process ID", esc(rt.pid)],
-      ["Uptime", fmtDuration(rt.uptime_seconds)],
-      ["Pipeline", esc(rt.status) + (rt.last_error ? " — last error: " + esc(rt.last_error) : "")],
-      ["WebSocket clients", esc(rt.websocket_clients)],
-    ]);
-
-    html += backendTable("Configuration", "as the server resolved it", ["Setting", "Value"], [
-      ["Extraction backend", esc(st.extraction_backend)],
-      ["Embedding model", esc(st.embedding_model)],
-      ["NLI model", esc(st.nli_model)],
-      ["LLM provider", esc(st.llm_provider)],
-      ["OpenAI key set", st.openai_key_set ? "yes" : "no"],
-      ["RPRA_SEED_CORPUS", esc(st.seed_corpus)],
-    ].concat(info.libraries.map(function (lib) {
-      return ["Library: " + esc(lib.name), lib.installed ? "installed" : "not installed"];
-    })));
-
-    var run = info.last_run;
-    html += backendTable("Last run on this server",
-      run ? "" : "no run since the server started",
-      ["Measure", "Value"],
-      run ? [
-        ["Documents", esc(run.documents)],
-        ["Entities", esc(run.entities)],
-        ["Relations", esc(run.relations)],
-        ["Scored pairs", esc(run.scored_pairs)],
-        ["Graph", esc(run.kg_nodes) + " nodes · " + esc(run.kg_edges) + " edges"],
-        ["Embedding backend", esc(run.embedding_backend)],
-        ["Extraction backend", esc(run.extraction_backend)],
-        ["Duration", esc(run.elapsed_seconds) + " s"],
-        ["Ingestion errors", esc(run.ingestion_errors)],
-      ] : []);
-
-    html += backendTable("Pipeline stages", "latest event per stage",
-      ["Stage", "Status", "Message", "Elapsed"],
-      info.stages.map(function (s) {
-        return [esc(STAGE_LABELS[s.stage] || s.stage), esc(s.status), esc(s.message),
-          s.elapsed_seconds == null ? "" : fmt(s.elapsed_seconds, 1) + " s"];
-      }));
-
-    html += backendTable("Endpoints", "rows each returns right now", ["Path", "Rows"],
-      info.endpoints.map(function (e) { return [esc(e.path), esc(e.rows)]; }));
-
-    html += backendTable("Entities by type", "", ["Type", "Count"],
-      Object.keys(info.entity_counts).sort(function (a, b) {
-        return info.entity_counts[b] - info.entity_counts[a];
-      }).map(function (k) { return [esc(k), esc(info.entity_counts[k])]; }));
-
-    html += backendTable("Storage", "on the server's disk", ["Location", "Path", "Files", "Size"],
-      info.storage.map(function (r) {
-        return [esc(r.label), esc(r.path), esc(r.files), fmtBytes(r.bytes)];
-      }));
-
-    html += backendTable("Corpus files", info.corpus.length + " PDFs on the server's disk",
-      ["File", "Size", "Modified", "Analysed"],
-      info.corpus.map(function (f) {
-        return [esc(f.filename), fmtBytes(f.size_bytes),
-          esc(new Date(f.modified * 1000).toLocaleString()), f.analysed ? "yes" : "no"];
-      }));
-
-    area.innerHTML = html;
-  }
-
-  // ------------------------------------------------------------------
   // Weights modal
   // ------------------------------------------------------------------
 
@@ -1603,7 +1476,6 @@
           $(other.getAttribute("data-panel")).setAttribute("data-active", active ? "true" : "false");
         });
         // Cytoscape cannot size itself while its container is display:none.
-        if (tab.getAttribute("data-panel") === "panel-backend") renderBackend();
         if (tab.getAttribute("data-panel") === "panel-graph" && state.cy) {
           setTimeout(function () { state.cy.resize(); state.cy.fit(undefined, 36); }, 30);
         }

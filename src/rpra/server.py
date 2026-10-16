@@ -1093,6 +1093,12 @@ STATIC_DIR = Path(__file__).parent / "static"
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+    # The root is the backend status page. The analysis UI is hosted separately
+    # (Vercel) and is still served here at /app for `rpra serve` use.
     @app.get("/", include_in_schema=False)
+    async def serve_backend_page() -> FileResponse:
+        return FileResponse(STATIC_DIR / "backend.html")
+
+    @app.get("/app", include_in_schema=False)
     async def serve_index() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")

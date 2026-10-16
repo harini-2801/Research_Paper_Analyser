@@ -126,10 +126,10 @@ cd Research_Paper_Analyser
 pip install -e .
 
 python scripts/make_sample_corpus.py   # or drop your own PDFs into data/papers
-rpra serve                             # http://localhost:8000
+rpra serve                             # http://localhost:8000/app
 ```
 
-`rpra serve` hosts the API and the interface together, so there is nothing to
+`rpra serve` hosts the API and the interface together (interface at `/app`, backend status page at `/`), so there is nothing to
 connect.
 
 For the transformer models and the test suite:
