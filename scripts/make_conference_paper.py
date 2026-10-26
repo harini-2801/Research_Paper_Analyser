@@ -89,6 +89,32 @@ def para(
     )
 
 
+_SMALL = {"a", "an", "the", "of", "in", "on", "and", "or", "for", "to", "with", "by", "at", "as", "vs"}
+
+
+def title_case(text: str) -> str:
+    """AIP second-level headings capitalise every major word."""
+    words = text.split(" ")
+    out = []
+    for i, w in enumerate(words):
+        if i and w.lower() in _SMALL:
+            out.append(w.lower())
+        elif w[:1].islower():
+            out.append(w[:1].upper() + w[1:])
+        else:
+            out.append(w)
+    return " ".join(out)
+
+
+def caption_para(style: str, label: str, text: str) -> str:
+    """A caption whose label ("TABLE 1.", "Fig. 2.") is bold and whose text is not."""
+    return (
+        f'<w:p><w:pPr><w:pStyle w:val="{style}"/></w:pPr>'
+        f'<w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">{escape(label)} </w:t></w:r>'
+        f'<w:r><w:t xml:space="preserve">{escape(text)}</w:t></w:r></w:p>'
+    )
+
+
 def png_size(path: Path) -> tuple[int, int]:
     """Pixel dimensions straight out of the PNG IHDR chunk."""
     raw = path.read_bytes()
@@ -121,45 +147,66 @@ def drawing_xml(rel_id: str, width_emu: int, height_emu: int, name: str) -> str:
     )
 
 
-def table_xml(spec: dict, style: str, total_dxa: int = 9000) -> str:
-    """A ruled table using the template's own table style."""
+def table_xml(spec: dict, style: str, total_dxa: int = 9000, house: str = "aip") -> str:
+    """
+    A table ruled the way each template rules its own.
+
+    AIP: a thin rule above the header row, one below it, and one under the last row,
+    with centred numeric columns. LNCS: a heavy rule above and below the table and a
+    lighter one under the header row, left-aligned text, 9 pt throughout. Neither has
+    rules between body rows, and neither uses a named table style.
+    """
+    aip = house == "aip"
     widths = [int(w * total_dxa) for w in spec["widths"]]
     # Trailing columns absorb any rounding drift so the grid still sums correctly.
     widths[-1] += total_dxa - sum(widths)
 
-    grid = "".join(f'<w:gridCol w:w="{w}"/>' for w in widths)
-    rows = ""
+    top = '<w:top w:val="single" w:sz="{}" w:space="0" w:color="000000"/>'.format(4 if aip else 12)
+    mid = '<w:bottom w:val="single" w:sz="{}" w:space="0" w:color="000000"/>'.format(4 if aip else 6)
+    end = '<w:bottom w:val="single" w:sz="{}" w:space="0" w:color="000000"/>'.format(4 if aip else 12)
 
-    header_cells = ""
-    for text, width in zip(spec["headers"], widths):
-        header_cells += (
-            f'<w:tc><w:tcPr><w:tcW w:w="{width}" w:type="dxa"/></w:tcPr>'
-            f'<w:p><w:pPr><w:jc w:val="left"/></w:pPr>'
-            f"<w:r><w:rPr><w:b/><w:sz w:val=\"18\"/></w:rPr>"
+    # AIP centres short columns (numbers) and left-aligns long text; the first column stays left.
+    centre = []
+    for col in range(len(widths)):
+        cells = [spec["headers"][col]] + [row[col] for row in spec["rows"]]
+        centre.append(aip and col > 0 and max(len(str(c)) for c in cells) <= 16)
+
+    grid = "".join(f'<w:gridCol w:w="{w}"/>' for w in widths)
+    body_sz = 20 if aip else 18
+
+    def cell(text: str, width: int, col: int, borders: str, header: bool) -> str:
+        jc = "center" if centre[col] else "left"
+        sz = 18 if header else body_sz
+        bold = "<w:b/>" if (header and aip) else ""
+        tcb = f"<w:tcBorders>{borders}</w:tcBorders>" if borders else ""
+        return (
+            f'<w:tc><w:tcPr><w:tcW w:w="{width}" w:type="dxa"/>{tcb}</w:tcPr>'
+            f'<w:p><w:pPr><w:ind w:firstLine="0"/><w:jc w:val="{jc}"/></w:pPr>'
+            f'<w:r><w:rPr>{bold}<w:sz w:val="{sz}"/><w:szCs w:val="{sz}"/></w:rPr>'
             f'<w:t xml:space="preserve">{escape(text)}</w:t></w:r></w:p></w:tc>'
         )
-    rows += f"<w:tr><w:trPr><w:tblHeader/></w:trPr>{header_cells}</w:tr>"
 
-    for row in spec["rows"]:
-        cells = ""
-        for text, width in zip(row, widths):
-            cells += (
-                f'<w:tc><w:tcPr><w:tcW w:w="{width}" w:type="dxa"/></w:tcPr>'
-                f'<w:p><w:pPr><w:jc w:val="left"/></w:pPr>'
-                f'<w:r><w:rPr><w:sz w:val="18"/></w:rPr>'
-                f'<w:t xml:space="preserve">{escape(text)}</w:t></w:r></w:p></w:tc>'
-            )
-        rows += f"<w:tr>{cells}</w:tr>"
+    rows = ""
+    header_cells = "".join(
+        cell(t, w, i, top + mid, True) for i, (t, w) in enumerate(zip(spec["headers"], widths))
+    )
+    rows += f'<w:tr><w:trPr><w:cantSplit/><w:tblHeader/></w:trPr>{header_cells}</w:tr>'
+
+    last = len(spec["rows"]) - 1
+    for r, row in enumerate(spec["rows"]):
+        cells = "".join(
+            cell(t, w, i, end if r == last else "", False)
+            for i, (t, w) in enumerate(zip(row, widths))
+        )
+        rows += f"<w:tr><w:trPr><w:cantSplit/></w:trPr>{cells}</w:tr>"
 
     return (
         "<w:tbl><w:tblPr>"
-        f'<w:tblStyle w:val="{style}"/>'
         f'<w:tblW w:w="{total_dxa}" w:type="dxa"/>'
-        '<w:tblBorders>'
-        '<w:top w:val="single" w:sz="6" w:color="000000"/>'
-        '<w:bottom w:val="single" w:sz="6" w:color="000000"/>'
-        '<w:insideH w:val="single" w:sz="4" w:color="808080"/>'
-        "</w:tblBorders>"
+        '<w:jc w:val="center"/>'
+        '<w:tblLayout w:type="fixed"/>'
+        '<w:tblCellMar><w:left w:w="70" w:type="dxa"/><w:right w:w="70" w:type="dxa"/></w:tblCellMar>'
+        '<w:tblLook w:val="0000" w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:noHBand="0" w:noVBand="0"/>'
         "</w:tblPr>"
         f"<w:tblGrid>{grid}</w:tblGrid>{rows}</w:tbl>"
         # Word needs a paragraph after a table or the next block can merge into it.
@@ -180,6 +227,8 @@ class Renderer:
     number_headings = False
     caption_above = False
     heading_caps = False
+    house = "aip"
+    title_case_h2 = False
 
     max_figure_inches = 6.0
 
@@ -220,12 +269,8 @@ class Renderer:
             )
             + "</w:p>"
         )
-        caption = para(
-            self.styles["figcaption"],
-            f"FIGURE {self.figure_n}. {spec['caption']}"
-            if self.caps_figure_label
-            else f"Fig. {self.figure_n}. {spec['caption']}",
-        )
+        label = f"FIGURE {self.figure_n}." if self.caps_figure_label else f"Fig. {self.figure_n}."
+        caption = caption_para(self.styles["figcaption"], label, spec["caption"])
         return image + caption
 
     # -- per-house pieces, overridden below --------------------------------
@@ -249,16 +294,16 @@ class Renderer:
 
         self.h2_n += 1
         label = f"{self.h1_n}.{self.h2_n} {text}" if self.number_headings else text
+        if self.title_case_h2:
+            label = title_case(label)
         return para(self.styles["h2"], label)
 
     def table(self, key: str) -> str:
         self.table_n += 1
         spec = C.TABLES[key]
-        caption = para(
-            self.styles["caption"],
-            f"Table {self.table_n}. {spec['caption']}",
-        )
-        body = table_xml(spec, self.table_style)
+        label = f"TABLE {self.table_n}." if self.caps_figure_label else f"Table {self.table_n}."
+        caption = caption_para(self.styles["caption"], label, spec["caption"])
+        body = table_xml(spec, self.table_style, house=self.house)
         return caption + body if self.caption_above else body + caption
 
     def body(self) -> str:
@@ -304,9 +349,11 @@ class AIPRenderer(Renderer):
     }
     table_style = "TableGrid"
     number_headings = False
-    caption_above = False
+    caption_above = True
     heading_caps = True
     caps_figure_label = True
+    house = "aip"
+    title_case_h2 = True
     # US Letter with the template's margins leaves about this much column.
     max_figure_inches = 6.0
 
@@ -338,7 +385,7 @@ class AIPRenderer(Renderer):
         # The Reference style carries its own numbering, so the entries are
         # added bare; numbering them here as well produced "4. 4. Luan, Y. ...".
         out = self.heading(1, "References")
-        for ref in C.REFERENCES:
+        for ref in C.REFERENCES_AIP:
             out += para(self.styles["ref"], ref)
         return out
 
@@ -369,6 +416,8 @@ class LNCSRenderer(Renderer):
     caption_above = True
     heading_caps = False
     caps_figure_label = False
+    house = "lncs"
+    title_case_h2 = False
     # The LNCS text block is 12.2 cm wide.
     max_figure_inches = 4.8
 
