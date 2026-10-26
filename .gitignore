@@ -43,3 +43,15 @@ paper/_run/
 
 # Word lock files
 ~$*
+
+# Scratch output of the evaluation runs, and backups of superseded report sources
+paper/_run_ext/
+paper/_run_synth/
+scripts/_long_sources/
+
+# The generated project report holds submission details (registration numbers, signatures,
+# the HoD's name); it is rebuilt from scripts/make_project_report.py and is not tracked.
+report/
+
+# Personal documents
+Harini_Sriram_Resume*.pdf
