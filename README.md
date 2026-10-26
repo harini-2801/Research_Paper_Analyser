@@ -1,23 +1,10 @@
 # Research Paper Relationship Analyzer
 
-**BCSE497J – Project I | Vellore Institute of Technology, Chennai Campus**
-**School of Computer Science and Engineering**
-
-| Member | Reg. No. |
-|---|---|
-| Anjaneya Sahu | 23BCE1448 |
-| Harini Sriram | 23BDS1124 |
-| Khushi Kumari | 23BAI1324 |
-
-**Guide:** Dr. Poornima S, Faculty, School of Computer Science and Engineering
-
 ---
 
 ## Project Overview
 
 This project builds an **end-to-end, explainable Research Paper Relationship Analyzer** — a system that automatically ingests a corpus of research papers (PDFs), extracts structured knowledge from them, constructs a dynamic Knowledge Graph, detects contradictory claims across papers, and surfaces unexplored research gaps using LLM-assisted reasoning.
-
-The work is grounded in the literature survey conducted as part of BCSE497J and directly implements the architecture proposed in the **Panel Implementation Strategy** document.
 
 ---
 
