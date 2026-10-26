@@ -299,9 +299,23 @@ def test_report_accepts_pdf_as_a_format():
 
 
 def test_index_page_is_served():
-    response = client.get("/")
+    # The interface lives at /app; the root is the backend status page.
+    response = client.get("/app")
     assert response.status_code == 200
     assert "Research Paper Relationship Analyzer" in response.text
+
+
+def test_root_serves_the_backend_status_page():
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "RPRA backend" in response.text
+
+
+def test_backend_info_reports_the_running_server():
+    data = client.get("/api/backend").json()
+    assert data["runtime"]["pid"] > 0
+    assert {e["path"] for e in data["endpoints"]} >= {"/api/documents", "/api/scores", "/api/graph"}
+    assert isinstance(data["storage"], list) and data["storage"]
 
 
 def test_static_assets_are_served():
